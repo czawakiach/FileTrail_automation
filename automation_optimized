@@ -28,10 +28,6 @@ class FileTrailComparator:
         self.data = {}
         self.results = {}
         
-        # Optimization settings
-        self.min_substring_length = 4
-        self.fuzzy_threshold = 70
-        
         self.create_widgets()
         
     def create_widgets(self):
@@ -76,9 +72,29 @@ class FileTrailComparator:
         ttk.Button(file_frame, text="Browse", 
                   command=lambda: self.browse_file('lines_3d')).grid(row=3, column=2)
         
+        # Settings section
+        settings_frame = ttk.LabelFrame(main_frame, text="Matching Settings", padding="10")
+        settings_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        
+        # Substring length setting
+        ttk.Label(settings_frame, text="Min Substring Length:").grid(row=0, column=0, sticky=tk.W, padx=5)
+        self.substring_length_var = tk.IntVar(value=4)
+        substring_spinbox = ttk.Spinbox(settings_frame, from_=3, to=10, width=5, 
+                                       textvariable=self.substring_length_var)
+        substring_spinbox.grid(row=0, column=1, padx=5)
+        ttk.Label(settings_frame, text="characters").grid(row=0, column=2, sticky=tk.W, padx=5)
+        
+        # Fuzzy threshold setting
+        ttk.Label(settings_frame, text="Fuzzy Match Threshold:").grid(row=0, column=3, sticky=tk.W, padx=(20, 5))
+        self.fuzzy_threshold_var = tk.IntVar(value=70)
+        fuzzy_spinbox = ttk.Spinbox(settings_frame, from_=50, to=95, width=5, 
+                                   textvariable=self.fuzzy_threshold_var)
+        fuzzy_spinbox.grid(row=0, column=4, padx=5)
+        ttk.Label(settings_frame, text="% similarity").grid(row=0, column=5, sticky=tk.W, padx=5)
+        
         # Processing section
         process_frame = ttk.LabelFrame(main_frame, text="Processing", padding="10")
-        process_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        process_frame.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
         
         # Process button
         self.process_button = ttk.Button(process_frame, text="Process Data", 
@@ -98,7 +114,7 @@ class FileTrailComparator:
         
         # Results section
         results_frame = ttk.LabelFrame(main_frame, text="Results", padding="10")
-        results_frame.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
+        results_frame.grid(row=4, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
         
         # Results text area
         self.results_text = tk.Text(results_frame, height=15, width=80)
@@ -110,11 +126,11 @@ class FileTrailComparator:
         # Export button
         self.export_button = ttk.Button(main_frame, text="Export to Excel", 
                                        command=self.export_to_excel, state=tk.DISABLED)
-        self.export_button.grid(row=4, column=0, columnspan=3, pady=10)
+        self.export_button.grid(row=5, column=0, columnspan=3, pady=10)
         
         # Configure grid weights
         main_frame.columnconfigure(1, weight=1)
-        main_frame.rowconfigure(3, weight=1)
+        main_frame.rowconfigure(4, weight=1)
         results_frame.columnconfigure(0, weight=1)
         results_frame.rowconfigure(0, weight=1)
         
@@ -157,6 +173,9 @@ class FileTrailComparator:
     
     def create_lookup_structures(self, data_dict):
         """Create optimized lookup structures for fast matching"""
+        # Get current settings from GUI
+        min_substring_length = self.substring_length_var.get()
+        
         lookup_structures = {}
         
         for db_name, data_list in data_dict.items():
@@ -183,11 +202,11 @@ class FileTrailComparator:
                     exact_set.add(normalized)
                     normalized_dict[normalized] = item
                     
-                    # Create substrings for substring matching (min 4 chars)
-                    if len(normalized) >= self.min_substring_length:
-                        for i in range(len(normalized) - self.min_substring_length + 1):
-                            substring = normalized[i:i + self.min_substring_length]
-                            if len(substring) >= self.min_substring_length:
+                    # Create substrings for substring matching (using GUI setting)
+                    if len(normalized) >= min_substring_length:
+                        for i in range(len(normalized) - min_substring_length + 1):
+                            substring = normalized[i:i + min_substring_length]
+                            if len(substring) >= min_substring_length:
                                 substring_dict[substring].append(item)
             
             lookup_structures[db_name] = {
@@ -203,6 +222,10 @@ class FileTrailComparator:
         """Optimized matching using pre-built lookup structures"""
         if not line_id or pd.isna(line_id):
             return {}
+        
+        # Get current settings from GUI
+        min_substring_length = self.substring_length_var.get()
+        fuzzy_threshold = self.fuzzy_threshold_var.get()
         
         normalized_line_id = self.normalize_string(line_id)
         if not normalized_line_id:
@@ -224,13 +247,13 @@ class FileTrailComparator:
                 continue
             
             # 2. Substring match (fast)
-            if not match_found and len(normalized_line_id) >= self.min_substring_length:
+            if not match_found and len(normalized_line_id) >= min_substring_length:
                 best_substring_match = None
                 best_substring_score = 0
                 
                 # Check if any substring of line_id matches
-                for i in range(len(normalized_line_id) - self.min_substring_length + 1):
-                    substring = normalized_line_id[i:i + self.min_substring_length]
+                for i in range(len(normalized_line_id) - min_substring_length + 1):
+                    substring = normalized_line_id[i:i + min_substring_length]
                     if substring in structures['substring_dict']:
                         for candidate in structures['substring_dict'][substring]:
                             # Verify it's actually a substring match
@@ -259,7 +282,7 @@ class FileTrailComparator:
                     normalized_line_id, 
                     [self.normalize_string(item) for item in structures['fuzzy_list']],
                     scorer=fuzz.ratio,
-                    score_cutoff=self.fuzzy_threshold
+                    score_cutoff=fuzzy_threshold
                 )
                 
                 if result:
@@ -454,7 +477,10 @@ class FileTrailComparator:
             self.results['unique_records'] = filtered_filetrail[~filtered_filetrail['Has_Any_Match']].copy()
             
             # Display statistics
-            self.results_text.insert(tk.END, f"Match Statistics (min {self.min_substring_length} chars substring, {self.fuzzy_threshold}% fuzzy):\n")
+            min_substring_length = self.substring_length_var.get()
+            fuzzy_threshold = self.fuzzy_threshold_var.get()
+            
+            self.results_text.insert(tk.END, f"Match Statistics (min {min_substring_length} chars substring, {fuzzy_threshold}% fuzzy):\n")
             for file_type, stat in stats.items():
                 if stat['total'] > 0:
                     self.results_text.insert(tk.END, f"{file_type.replace('_', ' ').title()}: {stat['total']} matches\n")
