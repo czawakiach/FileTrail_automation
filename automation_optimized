@@ -20,7 +20,9 @@ class FileTrailComparator:
         self.file_paths = {
             'filetrail': None,
             'exploration_archives': None,
-            'open_works': None,
+            'open_works_1': None,
+            'open_works_2': None,
+            'open_works_3': None,
             'lines_3d': None
         }
         
@@ -58,19 +60,31 @@ class FileTrailComparator:
         ttk.Button(file_frame, text="Browse", 
                   command=lambda: self.browse_file('exploration_archives')).grid(row=1, column=2)
         
-        # Open Works (optional)
-        ttk.Label(file_frame, text="Open Works (Optional):").grid(row=2, column=0, sticky=tk.W, pady=2)
-        self.open_works_var = tk.StringVar()
-        ttk.Entry(file_frame, textvariable=self.open_works_var, width=50).grid(row=2, column=1, padx=5)
+        # Open Works files (up to 3)
+        ttk.Label(file_frame, text="Open Works 1 (Optional):").grid(row=2, column=0, sticky=tk.W, pady=2)
+        self.open_works_1_var = tk.StringVar()
+        ttk.Entry(file_frame, textvariable=self.open_works_1_var, width=50).grid(row=2, column=1, padx=5)
         ttk.Button(file_frame, text="Browse", 
-                  command=lambda: self.browse_file('open_works')).grid(row=2, column=2)
+                  command=lambda: self.browse_file('open_works_1')).grid(row=2, column=2)
+        
+        ttk.Label(file_frame, text="Open Works 2 (Optional):").grid(row=3, column=0, sticky=tk.W, pady=2)
+        self.open_works_2_var = tk.StringVar()
+        ttk.Entry(file_frame, textvariable=self.open_works_2_var, width=50).grid(row=3, column=1, padx=5)
+        ttk.Button(file_frame, text="Browse", 
+                  command=lambda: self.browse_file('open_works_2')).grid(row=3, column=2)
+        
+        ttk.Label(file_frame, text="Open Works 3 (Optional):").grid(row=4, column=0, sticky=tk.W, pady=2)
+        self.open_works_3_var = tk.StringVar()
+        ttk.Entry(file_frame, textvariable=self.open_works_3_var, width=50).grid(row=4, column=1, padx=5)
+        ttk.Button(file_frame, text="Browse", 
+                  command=lambda: self.browse_file('open_works_3')).grid(row=4, column=2)
         
         # 3D Lines (optional)
-        ttk.Label(file_frame, text="3D Lines Project (Optional):").grid(row=3, column=0, sticky=tk.W, pady=2)
+        ttk.Label(file_frame, text="3D Lines Project (Optional):").grid(row=5, column=0, sticky=tk.W, pady=2)
         self.lines_3d_var = tk.StringVar()
-        ttk.Entry(file_frame, textvariable=self.lines_3d_var, width=50).grid(row=3, column=1, padx=5)
+        ttk.Entry(file_frame, textvariable=self.lines_3d_var, width=50).grid(row=5, column=1, padx=5)
         ttk.Button(file_frame, text="Browse", 
-                  command=lambda: self.browse_file('lines_3d')).grid(row=3, column=2)
+                  command=lambda: self.browse_file('lines_3d')).grid(row=5, column=2)
         
         # Settings section
         settings_frame = ttk.LabelFrame(main_frame, text="Matching Settings", padding="10")
@@ -149,8 +163,12 @@ class FileTrailComparator:
                 self.filetrail_var.set(file_path)
             elif file_type == 'exploration_archives':
                 self.exploration_var.set(file_path)
-            elif file_type == 'open_works':
-                self.open_works_var.set(file_path)
+            elif file_type == 'open_works_1':
+                self.open_works_1_var.set(file_path)
+            elif file_type == 'open_works_2':
+                self.open_works_2_var.set(file_path)
+            elif file_type == 'open_works_3':
+                self.open_works_3_var.set(file_path)
             elif file_type == 'lines_3d':
                 self.lines_3d_var.set(file_path)
     
@@ -372,7 +390,9 @@ class FileTrailComparator:
             comparison_data = {}
             comparison_columns = {
                 'exploration_archives': 'EA Line Name',
-                'open_works': 'LINE',
+                'open_works_1': 'LINE',
+                'open_works_2': 'LINE',
+                'open_works_3': 'LINE',
                 'lines_3d': 'SURVEY'
             }
             
@@ -381,11 +401,20 @@ class FileTrailComparator:
                     data = self.load_data(self.file_paths[file_type])
                     if data is not None and column_name in data.columns:
                         comparison_data[file_type] = data[column_name].dropna().tolist()
-                        self.results_text.insert(tk.END, f"{file_type.replace('_', ' ').title()}: {len(comparison_data[file_type])} records\n")
+                        display_name = file_type.replace('_', ' ').title()
+                        if 'open_works' in file_type:
+                            display_name = file_type.replace('_', ' ').replace('works', 'Works').title()
+                        self.results_text.insert(tk.END, f"{display_name}: {len(comparison_data[file_type])} records\n")
                     else:
-                        self.results_text.insert(tk.END, f"{file_type.replace('_', ' ').title()}: Column '{column_name}' not found or file error\n")
+                        display_name = file_type.replace('_', ' ').title()
+                        if 'open_works' in file_type:
+                            display_name = file_type.replace('_', ' ').replace('works', 'Works').title()
+                        self.results_text.insert(tk.END, f"{display_name}: Column '{column_name}' not found or file error\n")
                 else:
-                    self.results_text.insert(tk.END, f"{file_type.replace('_', ' ').title()}: Not provided\n")
+                    display_name = file_type.replace('_', ' ').title()
+                    if 'open_works' in file_type:
+                        display_name = file_type.replace('_', ' ').replace('works', 'Works').title()
+                    self.results_text.insert(tk.END, f"{display_name}: Not provided\n")
             
             self.results_text.insert(tk.END, "\n")
             
@@ -403,9 +432,15 @@ class FileTrailComparator:
             filtered_filetrail['EA_Match'] = ""
             filtered_filetrail['EA_Match_Type'] = ""
             filtered_filetrail['EA_Score'] = 0
-            filtered_filetrail['OW_Match'] = ""
-            filtered_filetrail['OW_Match_Type'] = ""
-            filtered_filetrail['OW_Score'] = 0
+            filtered_filetrail['OW1_Match'] = ""
+            filtered_filetrail['OW1_Match_Type'] = ""
+            filtered_filetrail['OW1_Score'] = 0
+            filtered_filetrail['OW2_Match'] = ""
+            filtered_filetrail['OW2_Match_Type'] = ""
+            filtered_filetrail['OW2_Score'] = 0
+            filtered_filetrail['OW3_Match'] = ""
+            filtered_filetrail['OW3_Match_Type'] = ""
+            filtered_filetrail['OW3_Score'] = 0
             filtered_filetrail['3D_Match'] = ""
             filtered_filetrail['3D_Match_Type'] = ""
             filtered_filetrail['3D_Score'] = 0
@@ -414,7 +449,9 @@ class FileTrailComparator:
             # Track statistics
             stats = {
                 'exploration_archives': {'exact': 0, 'substring': 0, 'fuzzy': 0, 'total': 0},
-                'open_works': {'exact': 0, 'substring': 0, 'fuzzy': 0, 'total': 0},
+                'open_works_1': {'exact': 0, 'substring': 0, 'fuzzy': 0, 'total': 0},
+                'open_works_2': {'exact': 0, 'substring': 0, 'fuzzy': 0, 'total': 0},
+                'open_works_3': {'exact': 0, 'substring': 0, 'fuzzy': 0, 'total': 0},
                 'lines_3d': {'exact': 0, 'substring': 0, 'fuzzy': 0, 'total': 0}
             }
             
@@ -453,19 +490,31 @@ class FileTrailComparator:
                             filtered_filetrail.loc[row_idx, 'EA_Match'] = match_info['value']
                             filtered_filetrail.loc[row_idx, 'EA_Match_Type'] = match_info['match_type']
                             filtered_filetrail.loc[row_idx, 'EA_Score'] = match_info['score']
-                        elif file_type == 'open_works':
-                            filtered_filetrail.loc[row_idx, 'OW_Match'] = match_info['value']
-                            filtered_filetrail.loc[row_idx, 'OW_Match_Type'] = match_info['match_type']
-                            filtered_filetrail.loc[row_idx, 'OW_Score'] = match_info['score']
+                        elif file_type == 'open_works_1':
+                            filtered_filetrail.loc[row_idx, 'OW1_Match'] = match_info['value']
+                            filtered_filetrail.loc[row_idx, 'OW1_Match_Type'] = match_info['match_type']
+                            filtered_filetrail.loc[row_idx, 'OW1_Score'] = match_info['score']
+                        elif file_type == 'open_works_2':
+                            filtered_filetrail.loc[row_idx, 'OW2_Match'] = match_info['value']
+                            filtered_filetrail.loc[row_idx, 'OW2_Match_Type'] = match_info['match_type']
+                            filtered_filetrail.loc[row_idx, 'OW2_Score'] = match_info['score']
+                        elif file_type == 'open_works_3':
+                            filtered_filetrail.loc[row_idx, 'OW3_Match'] = match_info['value']
+                            filtered_filetrail.loc[row_idx, 'OW3_Match_Type'] = match_info['match_type']
+                            filtered_filetrail.loc[row_idx, 'OW3_Score'] = match_info['score']
                         elif file_type == 'lines_3d':
                             filtered_filetrail.loc[row_idx, '3D_Match'] = match_info['value']
                             filtered_filetrail.loc[row_idx, '3D_Match_Type'] = match_info['match_type']
                             filtered_filetrail.loc[row_idx, '3D_Score'] = match_info['score']
                         
                         # Store detailed match info
+                        display_name = file_type.replace('_', ' ').title()
+                        if 'open_works' in file_type:
+                            display_name = file_type.replace('_', ' ').replace('works', 'Works').title()
+                        
                         match_details.append({
                             'FileTrail_LINE_ID': line_id,
-                            'Database': file_type.replace('_', ' ').title(),
+                            'Database': display_name,
                             'Matched_Value': match_info['value'],
                             'Match_Type': match_info['match_type'],
                             'Score': match_info['score']
@@ -483,7 +532,10 @@ class FileTrailComparator:
             self.results_text.insert(tk.END, f"Match Statistics (min {min_substring_length} chars substring, {fuzzy_threshold}% fuzzy):\n")
             for file_type, stat in stats.items():
                 if stat['total'] > 0:
-                    self.results_text.insert(tk.END, f"{file_type.replace('_', ' ').title()}: {stat['total']} matches\n")
+                    display_name = file_type.replace('_', ' ').title()
+                    if 'open_works' in file_type:
+                        display_name = file_type.replace('_', ' ').replace('works', 'Works').title()
+                    self.results_text.insert(tk.END, f"{display_name}: {stat['total']} matches\n")
                     self.results_text.insert(tk.END, f"  - Exact: {stat['exact']}\n")
                     self.results_text.insert(tk.END, f"  - Substring: {stat['substring']}\n")
                     self.results_text.insert(tk.END, f"  - Fuzzy: {stat['fuzzy']}\n")
