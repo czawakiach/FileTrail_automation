@@ -192,10 +192,15 @@ class FileTrailComparator:
                                        command=self.cancel_processing, state=tk.DISABLED)
         self.cancel_button.grid(row=0, column=1, padx=5)
         
+        # Clear/Reset button (new feature)
+        self.clear_button = ttk.Button(button_frame, text="Clear All", 
+                                      command=self.clear_all_data)
+        self.clear_button.grid(row=0, column=2, padx=5)
+        
         # Export button (moved next to process buttons for better visibility)
         self.export_button = ttk.Button(button_frame, text="Export to Excel", 
                                        command=self.export_to_excel, state=tk.DISABLED)
-        self.export_button.grid(row=0, column=2, padx=15)
+        self.export_button.grid(row=0, column=3, padx=15)
         
         # Progress bar
         self.progress_var = tk.DoubleVar()
@@ -564,6 +569,91 @@ class FileTrailComparator:
         if stats:
             perf_text = f"Time: {stats['elapsed_time']:.1f}s | Memory: +{stats['memory_used']:.1f}MB | Peak: {stats['peak_memory']:.1f}MB"
             self.update_ui_safe(lambda: self.perf_var.set(perf_text))
+    
+    def clear_all_data(self):
+        """Clear all loaded data, cache, and reset the interface for a fresh start"""
+        # Confirm with user before clearing
+        result = messagebox.askyesno(
+            "Clear All Data", 
+            "This will clear all loaded files, cached data, and results.\n\n"
+            "Are you sure you want to continue?"
+        )
+        
+        if not result:
+            return
+        
+        try:
+            # Clear file paths
+            self.file_paths = {
+                'filetrail': None,
+                'exploration_archives': None,
+                'open_works_1': None,
+                'open_works_2': None,
+                'open_works_3': None,
+                'lines_3d_ow': None,
+                'lines_3d_ea': None
+            }
+            
+            # Clear all StringVar variables (file path displays)
+            self.filetrail_var.set("")
+            self.exploration_var.set("")
+            self.open_works_1_var.set("")
+            self.open_works_2_var.set("")
+            self.open_works_3_var.set("")
+            self.lines_3d_ow_var.set("")
+            self.lines_3d_ea_var.set("")
+            
+            # Clear data storage
+            self.data.clear()
+            self.results.clear()
+            
+            # Clear caches
+            self.normalize_cache.clear()
+            self.match_cache.clear()
+            
+            # Clear the cached normalize function
+            self.normalize_string_cached.cache_clear()
+            
+            # Reset processing state
+            self.processing_cancelled = False
+            
+            # Reset progress and status
+            self.progress_var.set(0)
+            self.status_var.set("Ready")
+            self.perf_var.set("")
+            
+            # Clear results text area
+            self.results_text.delete(1.0, tk.END)
+            self.results_text.insert(tk.END, "All data cleared. Ready for new analysis.\n\n")
+            
+            # Reset button states
+            self.process_button.config(state=tk.NORMAL)
+            self.cancel_button.config(state=tk.DISABLED)
+            self.export_button.config(state=tk.DISABLED)
+            
+            # Reset performance monitor
+            self.performance_monitor = PerformanceMonitor()
+            
+            # Force garbage collection to free memory
+            import gc
+            gc.collect()
+            
+            # Show confirmation
+            self.status_var.set("All data cleared successfully")
+            
+            # Show memory freed information if available
+            try:
+                import psutil
+                process = psutil.Process()
+                current_memory = process.memory_info().rss / 1024 / 1024  # MB
+                self.results_text.insert(tk.END, f"Memory usage after cleanup: {current_memory:.1f} MB\n")
+                self.results_text.insert(tk.END, "Cache cleared, ready for new files.\n")
+            except:
+                pass
+                
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to clear data: {str(e)}")
+            self.status_var.set("Error during cleanup")
     
     def cancel_processing(self):
         """Cancel the current processing operation"""
