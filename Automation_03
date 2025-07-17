@@ -59,7 +59,19 @@ class FileTrailComparator:
     def __init__(self, root):
         self.root = root
         self.root.title("FileTrail Data Comparison Tool - Optimized v2")
-        self.root.geometry("900x700")
+        
+        # Make window responsive to screen size
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        window_width = min(1000, int(screen_width * 0.8))
+        window_height = min(800, int(screen_height * 0.85))
+        
+        # Center the window
+        x = (screen_width - window_width) // 2
+        y = (screen_height - window_height) // 2
+        
+        self.root.geometry(f"{window_width}x{window_height}+{x}+{y}")
+        self.root.minsize(800, 600)  # Set minimum size
         
         # File paths
         self.file_paths = {
@@ -180,6 +192,11 @@ class FileTrailComparator:
                                        command=self.cancel_processing, state=tk.DISABLED)
         self.cancel_button.grid(row=0, column=1, padx=5)
         
+        # Export button (moved next to process buttons for better visibility)
+        self.export_button = ttk.Button(button_frame, text="Export to Excel", 
+                                       command=self.export_to_excel, state=tk.DISABLED)
+        self.export_button.grid(row=0, column=2, padx=15)
+        
         # Progress bar
         self.progress_var = tk.DoubleVar()
         self.progress_bar = ttk.Progressbar(process_frame, variable=self.progress_var, 
@@ -196,27 +213,25 @@ class FileTrailComparator:
         self.perf_label = ttk.Label(process_frame, textvariable=self.perf_var, font=("Arial", 8))
         self.perf_label.grid(row=1, column=0, columnspan=3, pady=5)
         
-        # Results section
+        # Results section (adjusted to give more space)
         results_frame = ttk.LabelFrame(main_frame, text="Results", padding="10")
         results_frame.grid(row=4, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
         
-        # Results text area
-        self.results_text = tk.Text(results_frame, height=15, width=80)
+        # Results text area with adjusted height
+        self.results_text = tk.Text(results_frame, height=12, width=80)
         scrollbar = ttk.Scrollbar(results_frame, orient=tk.VERTICAL, command=self.results_text.yview)
         self.results_text.configure(yscrollcommand=scrollbar.set)
         self.results_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
         
-        # Export button
-        self.export_button = ttk.Button(main_frame, text="Export to Excel", 
-                                       command=self.export_to_excel, state=tk.DISABLED)
-        self.export_button.grid(row=5, column=0, columnspan=3, pady=10)
-        
-        # Configure grid weights
+        # Configure grid weights for responsive layout
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
         main_frame.columnconfigure(1, weight=1)
         main_frame.rowconfigure(4, weight=1)
         results_frame.columnconfigure(0, weight=1)
         results_frame.rowconfigure(0, weight=1)
+        process_frame.columnconfigure(1, weight=1)
         
     def browse_file(self, file_type):
         """Browse for file selection with validation"""
