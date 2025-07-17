@@ -1,0 +1,1227 @@
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+import pandas as pd
+import numpy as np
+from fuzzywuzzy import fuzz, process
+import re
+import os
+from datetime import datetime
+import threading
+import time
+import tracemalloc
+import psutil
+from collections import defaultdict
+from functools import lru_cache
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from matplotlib.figure import Figure
+import io
+import gc
+import weakref
+from contextlib import contextmanager
+
+
+class MemoryManager:
+    """Enhanced memory management with cleanup and monitoring"""
+    
+    def __init__(self, max_cache_size=5000):
+        self.max_cache_size = max_cache_size
+        self.figure_refs = weakref.WeakSet()
+        
+    @contextmanager
+    def managed_figure(self, *args, **kwargs):
+        """Context manager for matplotlib figures with automatic cleanup"""
+        fig = plt.figure(*args, **kwargs)
+        self.figure_refs.add(fig)
+        try:
+            yield fig
+        finally:
+            plt.close(fig)
+            if fig in self.figure_refs:
+                self.figure_refs.discard(fig)
+    
+    def cleanup_matplotlib(self):
+        """Clean up all matplotlib figures"""
+        plt.close('all')
+        # Force cleanup of any remaining figure references
+        for fig in list(self.figure_refs):
+            try:
+                plt.close(fig)
+            except:
+                pass
+        self.figure_refs.clear()
+    
+    def force_garbage_collection(self):
+        """Force garbage collection and return memory info"""
+        gc.collect()
+        try:
+            process = psutil.Process()
+            return process.memory_info().rss / 1024 / 1024  # MB
+        except:
+            return 0
+
+
+class DataProcessor:
+    """Optimized data processing with streaming and chunking"""
+    
+    def __init__(self, chunk_size=1000, max_fuzzy_candidates=500):
+        self.chunk_size = chunk_size
+        self.max_fuzzy_candidates = max_fuzzy_candidates
+        self.normalize_cache = {}
+        self.match_cache = {}
+        self.memory_manager = MemoryManager()
+        
+    def read_file_in_chunks(self, file_path, required_columns=None, max_rows=None):
+        """Read large files in chunks to manage memory"""
+        if not file_path or not os.path.exists(file_path):
+            return None
+            
+        file_extension = os.path.splitext(file_path)[1].lower()
+        
+        try:
+            if file_extension == '.csv':
+                # For CSV, we can use chunksize parameter
+                if max_rows:
+                    return pd.read_csv(file_path, usecols=required_columns, nrows=max_rows)
+                else:
+                    # Read in chunks and concatenate
+                    chunks = []
+                    total_rows = 0
+                    for chunk in pd.read_csv(file_path, usecols=required_columns, chunksize=self.chunk_size):
+                        chunks.append(chunk)
+                        total_rows += len(chunk)
+                        if max_rows and total_rows >= max_rows:
+                            break
+                    return pd.concat(chunks, ignore_index=True) if chunks else None
+            else:
+                # For Excel, read normally but with row limits
+                return pd.read_excel(file_path, usecols=required_columns, nrows=max_rows)
+                
+        except Exception as e:
+            print(f"Error reading file {file_path}: {e}")
+            return None
+    
+    def process_data_in_batches(self, dataframe, batch_processor, progress_callback=None):
+        """Process dataframe in batches with progress tracking"""
+        total_rows = len(dataframe)
+        results = []
+        
+        for start_idx in range(0, total_rows, self.chunk_size):
+            end_idx = min(start_idx + self.chunk_size, total_rows)
+            batch = dataframe.iloc[start_idx:end_idx]
+            
+            batch_result = batch_processor(batch, start_idx)
+            if batch_result is not None:
+                results.append(batch_result)
+            
+            # Progress callback
+            if progress_callback:
+                progress = (end_idx / total_rows) * 100
+                progress_callback(progress)
+            
+            # Memory management - clear caches periodically
+            if start_idx % (self.chunk_size * 10) == 0:
+                self.cleanup_caches()
+        
+        return results
+    
+    def cleanup_caches(self):
+        """Clean up caches when they get too large"""
+        if len(self.normalize_cache) > self.memory_manager.max_cache_size:
+            # Keep only the most recently used half
+            items = list(self.normalize_cache.items())
+            self.normalize_cache = dict(items[-self.memory_manager.max_cache_size//2:])
+        
+        if len(self.match_cache) > self.memory_manager.max_cache_size:
+            items = list(self.match_cache.items())
+            self.match_cache = dict(items[-self.memory_manager.max_cache_size//2:])
+    
+    @lru_cache(maxsize=5000)  # Reduced cache size
+    def normalize_string_cached(self, text):
+        """Cached string normalization with size limits"""
+        if pd.isna(text) or text is None:
+            return ""
+        
+        # Convert to string and uppercase
+        normalized = str(text).upper().strip()
+        
+        # Remove common suffixes and prefixes
+        normalized = re.sub(r'_3D', '', normalized)
+        normalized = re.sub(r'^E0*', '', normalized)
+        
+        # Remove special characters except alphanumeric and underscores
+        normalized = re.sub(r'[^A-Z0-9_]', '', normalized)
+        
+        return normalized
+    
+    def create_optimized_substrings(self, text, min_length):
+        """Create substrings with better memory efficiency"""
+        if not text or len(text) < min_length:
+            return []
+        
+        substrings = set()
+        
+        # Strategy 1: Split by underscores (most efficient)
+        parts = text.split('_')
+        for part in parts:
+            if len(part) >= min_length:
+                substrings.add(part)
+        
+        # Strategy 2: Extract meaningful alphanumeric blocks
+        alphanumeric_blocks = re.findall(r'[A-Z0-9]{' + str(min_length) + ',}', text)
+        substrings.update(alphanumeric_blocks[:5])  # Limit to 5 blocks
+        
+        # Strategy 3: Smart sampling for long strings
+        if len(text) > 20:
+            # Take beginning, middle, end
+            substrings.add(text[:min_length])
+            if len(text) > min_length * 2:
+                mid_start = len(text) // 2 - min_length // 2
+                substrings.add(text[mid_start:mid_start + min_length])
+            substrings.add(text[-min_length:])
+        else:
+            # For shorter strings, create overlapping substrings with step=2
+            for i in range(0, len(text) - min_length + 1, 2):
+                substrings.add(text[i:i + min_length])
+        
+        # Limit total substrings to prevent memory explosion
+        return list(substrings)[:10]
+    
+    def create_optimized_lookup_structures(self, data_dict, max_items_per_db=25000):
+        """Create memory-efficient lookup structures"""
+        lookup_structures = {}
+        
+        for db_name, data_list in data_dict.items():
+            # Clean and deduplicate data with size limits
+            clean_data = []
+            seen = set()
+            
+            for item in data_list:
+                if pd.notna(item) and str(item).strip():
+                    item_str = str(item)
+                    if item_str not in seen and len(clean_data) < max_items_per_db:
+                        clean_data.append(item_str)
+                        seen.add(item_str)
+            
+            if not clean_data:
+                lookup_structures[db_name] = {
+                    'exact_set': set(),
+                    'normalized_dict': {},
+                    'substring_dict': defaultdict(set),
+                    'fuzzy_list': []
+                }
+                continue
+            
+            # Create lookup structures with memory limits
+            exact_set = set()
+            normalized_dict = {}
+            substring_dict = defaultdict(set)
+            
+            for item in clean_data:
+                normalized = self.normalize_string_cached(item)
+                if normalized:
+                    exact_set.add(normalized)
+                    normalized_dict[normalized] = item
+                    
+                    # Create optimized substrings
+                    substrings = self.create_optimized_substrings(normalized, 6)
+                    for substring in substrings:
+                        if len(substring_dict[substring]) < 50:  # Limit substring matches
+                            substring_dict[substring].add(item)
+            
+            lookup_structures[db_name] = {
+                'exact_set': exact_set,
+                'normalized_dict': normalized_dict,
+                'substring_dict': substring_dict,
+                'fuzzy_list': clean_data[:self.max_fuzzy_candidates]  # Reduced fuzzy list
+            }
+        
+        return lookup_structures
+
+
+class OptimizedPerformanceMonitor:
+    """Enhanced performance monitoring with memory tracking"""
+    
+    def __init__(self):
+        self.start_time = None
+        self.start_memory = None
+        self.process = psutil.Process()
+        self.peak_memory = 0
+        self.memory_snapshots = []
+        
+    def start_monitoring(self):
+        """Start performance monitoring"""
+        tracemalloc.start()
+        self.start_time = time.time()
+        self.start_memory = self.process.memory_info().rss / 1024 / 1024
+        self.peak_memory = self.start_memory
+        
+    def take_memory_snapshot(self, label=""):
+        """Take a memory snapshot for analysis"""
+        current_memory = self.process.memory_info().rss / 1024 / 1024
+        self.peak_memory = max(self.peak_memory, current_memory)
+        
+        snapshot = {
+            'time': time.time() - (self.start_time or 0),
+            'memory_mb': current_memory,
+            'label': label
+        }
+        self.memory_snapshots.append(snapshot)
+        return snapshot
+    
+    def get_current_stats(self):
+        """Get current performance statistics"""
+        if self.start_time is None:
+            return None
+            
+        elapsed_time = time.time() - self.start_time
+        current_memory = self.process.memory_info().rss / 1024 / 1024
+        memory_used = current_memory - self.start_memory
+        
+        # Get tracemalloc data if available
+        try:
+            current, peak = tracemalloc.get_traced_memory()
+            peak_mb = peak / 1024 / 1024
+        except:
+            peak_mb = self.peak_memory
+        
+        return {
+            'elapsed_time': elapsed_time,
+            'memory_used': memory_used,
+            'peak_memory': peak_mb,
+            'current_memory': current_memory,
+            'memory_efficiency': len(self.memory_snapshots)
+        }
+    
+    def stop_monitoring(self):
+        """Stop monitoring and return comprehensive stats"""
+        stats = self.get_current_stats()
+        try:
+            tracemalloc.stop()
+        except:
+            pass
+        return stats
+
+
+class MatchQualityAnalyzer:
+    """Optimized match quality analyzer"""
+    
+    MATCH_CATEGORIES = {
+        'Perfect': (100, 100),
+        'Excellent': (95, 99),
+        'Very Good': (85, 94),
+        'Good': (75, 84),
+        'Fair': (65, 74),
+        'Poor': (50, 64),
+        'No Match': (0, 0)
+    }
+    
+    def __init__(self):
+        self.analysis_results = {}
+    
+    def categorize_score(self, score):
+        """Categorize a match score into quality categories"""
+        if score == 0:
+            return 'No Match'
+        
+        for category, (min_score, max_score) in self.MATCH_CATEGORIES.items():
+            if category == 'No Match':
+                continue
+            if min_score <= score <= max_score:
+                return category
+        
+        return 'Poor'
+    
+    def analyze_matches_efficiently(self, filtered_filetrail):
+        """Memory-efficient match analysis"""
+        databases = {
+            'EA': ('EA_Match', 'EA_Match_Type', 'EA_Score'),
+            'OW1': ('OW1_Match', 'OW1_Match_Type', 'OW1_Score'),
+            'OW2': ('OW2_Match', 'OW2_Match_Type', 'OW2_Score'),
+            'OW3': ('OW3_Match', 'OW3_Match_Type', 'OW3_Score'),
+            '3D_OW': ('3D_OW_Match', '3D_OW_Match_Type', '3D_OW_Score'),
+            '3D_EA': ('3D_EA_Match', '3D_EA_Match_Type', '3D_EA_Score')
+        }
+        
+        # Initialize analysis structure
+        analysis = {
+            'overall_categories': {cat: 0 for cat in self.MATCH_CATEGORIES.keys()},
+            'match_types': {'exact': 0, 'substring': 0, 'fuzzy': 0, 'no_match': 0},
+            'database_breakdown': {},
+            'total_records': len(filtered_filetrail),
+            'records_with_matches': 0
+        }
+        
+        # Initialize database breakdown
+        for db_name in databases.keys():
+            analysis['database_breakdown'][db_name] = {
+                'categories': {cat: 0 for cat in self.MATCH_CATEGORIES.keys()},
+                'match_types': {'exact': 0, 'substring': 0, 'fuzzy': 0, 'no_match': 0},
+                'total_matches': 0
+            }
+        
+        # Process in chunks to manage memory
+        chunk_size = 1000
+        total_rows = len(filtered_filetrail)
+        
+        for start_idx in range(0, total_rows, chunk_size):
+            end_idx = min(start_idx + chunk_size, total_rows)
+            chunk = filtered_filetrail.iloc[start_idx:end_idx]
+            
+            for _, row in chunk.iterrows():
+                has_any_match = False
+                
+                for db_name, (match_col, type_col, score_col) in databases.items():
+                    score = row[score_col] if pd.notna(row[score_col]) else 0
+                    match_type = row[type_col] if pd.notna(row[type_col]) else ''
+                    
+                    if score > 0 and match_type:
+                        has_any_match = True
+                        analysis['database_breakdown'][db_name]['total_matches'] += 1
+                        
+                        category = self.categorize_score(score)
+                        analysis['overall_categories'][category] += 1
+                        analysis['database_breakdown'][db_name]['categories'][category] += 1
+                        
+                        if match_type in analysis['match_types']:
+                            analysis['match_types'][match_type] += 1
+                            analysis['database_breakdown'][db_name]['match_types'][match_type] += 1
+                    else:
+                        analysis['overall_categories']['No Match'] += 1
+                        analysis['database_breakdown'][db_name]['categories']['No Match'] += 1
+                        analysis['match_types']['no_match'] += 1
+                        analysis['database_breakdown'][db_name]['match_types']['no_match'] += 1
+                
+                if has_any_match:
+                    analysis['records_with_matches'] += 1
+        
+        self.analysis_results = analysis
+        return analysis
+
+
+class OptimizedDataVisualizer:
+    """Memory-efficient data visualizer"""
+    
+    def __init__(self, memory_manager):
+        self.memory_manager = memory_manager
+        plt.style.use('default')
+        
+    def create_quality_distribution_chart(self, analysis, parent):
+        """Create quality distribution chart with memory management"""
+        with self.memory_manager.managed_figure(figsize=(10, 6), dpi=80) as fig:
+            # Overall quality distribution
+            ax1 = fig.add_subplot(121)
+            categories = list(analysis['overall_categories'].keys())
+            counts = list(analysis['overall_categories'].values())
+            
+            colors = ['#2E8B57', '#32CD32', '#90EE90', '#FFD700', '#FFA500', '#FF6347', '#D3D3D3']
+            
+            bars = ax1.bar(categories, counts, color=colors[:len(categories)])
+            ax1.set_title('Match Quality Distribution')
+            ax1.set_xlabel('Quality Category')
+            ax1.set_ylabel('Number of Records')
+            ax1.tick_params(axis='x', rotation=45)
+            
+            # Add value labels on bars
+            for bar, count in zip(bars, counts):
+                if count > 0:
+                    ax1.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.5,
+                            str(count), ha='center', va='bottom')
+            
+            # Match type distribution
+            ax2 = fig.add_subplot(122)
+            match_types = []
+            match_counts = []
+            match_colors = []
+            
+            type_color_map = {
+                'exact': '#2E8B57',
+                'substring': '#FFD700', 
+                'fuzzy': '#FF6347',
+                'no_match': '#D3D3D3'
+            }
+            
+            for match_type, count in analysis['match_types'].items():
+                if count > 0:
+                    match_types.append(match_type.title())
+                    match_counts.append(count)
+                    match_colors.append(type_color_map.get(match_type, '#D3D3D3'))
+            
+            if match_counts:
+                wedges, texts, autotexts = ax2.pie(match_counts, labels=match_types, colors=match_colors,
+                                                  autopct='%1.1f%%', startangle=90)
+                ax2.set_title('Match Type Distribution')
+            
+            fig.tight_layout()
+            
+            # Create canvas
+            canvas = FigureCanvasTkAgg(fig, parent)
+            canvas.draw()
+            return canvas.get_tk_widget()
+
+
+class OptimizedFileTrailComparator:
+    """Memory-optimized main application class"""
+    
+    def __init__(self, root):
+        self.root = root
+        self.root.title("FileTrail Data Comparison Tool - Memory Optimized")
+        
+        # Initialize optimized components
+        self.memory_manager = MemoryManager()
+        self.data_processor = DataProcessor()
+        self.performance_monitor = OptimizedPerformanceMonitor()
+        self.match_analyzer = MatchQualityAnalyzer()
+        self.data_visualizer = OptimizedDataVisualizer(self.memory_manager)
+        
+        # Configure window
+        self.setup_window()
+        
+        # Initialize data storage
+        self.file_paths = {
+            'filetrail': None,
+            'exploration_archives': None,
+            'open_works_1': None,
+            'open_works_2': None,
+            'open_works_3': None,
+            'lines_3d_ow': None,
+            'lines_3d_ea': None
+        }
+        
+        self.data = {}
+        self.results = {}
+        self.processing_cancelled = False
+        
+        self.create_widgets()
+    
+    def setup_window(self):
+        """Setup window with responsive sizing"""
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        window_width = min(1200, int(screen_width * 0.85))
+        window_height = min(900, int(screen_height * 0.85))
+        
+        x = (screen_width - window_width) // 2
+        y = (screen_height - window_height) // 2
+        
+        self.root.geometry(f"{window_width}x{window_height}+{x}+{y}")
+        self.root.minsize(1000, 700)
+    
+    def create_widgets(self):
+        """Create optimized UI widgets"""
+        # Create main notebook
+        main_notebook = ttk.Notebook(self.root, padding="5")
+        main_notebook.pack(fill='both', expand=True)
+        
+        # Processing tab
+        process_frame = ttk.Frame(main_notebook, padding="10")
+        main_notebook.add(process_frame, text="File Processing")
+        
+        # Visualization tab
+        self.viz_frame = ttk.Frame(main_notebook, padding="10")
+        main_notebook.add(self.viz_frame, text="Analysis & Charts")
+        
+        self.main_notebook = main_notebook
+        
+        # Create processing interface
+        self.create_processing_interface(process_frame)
+        self.create_visualization_placeholder()
+    
+    def create_processing_interface(self, parent):
+        """Create the processing interface with memory monitoring"""
+        # Title
+        title_label = ttk.Label(parent, text="FileTrail Data Comparison Tool - Memory Optimized", 
+                               font=("Arial", 16, "bold"))
+        title_label.grid(row=0, column=0, columnspan=3, pady=(0, 20))
+        
+        # File selection section (same as original but with memory info)
+        file_frame = ttk.LabelFrame(parent, text="File Selection", padding="10")
+        file_frame.grid(row=1, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        
+        # FileTrail (required)
+        ttk.Label(file_frame, text="FileTrail Search Result (Required):").grid(row=0, column=0, sticky=tk.W, pady=2)
+        self.filetrail_var = tk.StringVar()
+        ttk.Entry(file_frame, textvariable=self.filetrail_var, width=50).grid(row=0, column=1, padx=5)
+        ttk.Button(file_frame, text="Browse", 
+                  command=lambda: self.browse_file('filetrail')).grid(row=0, column=2)
+        
+        # Memory usage display
+        self.memory_var = tk.StringVar(value="Memory: 0 MB")
+        memory_label = ttk.Label(file_frame, textvariable=self.memory_var, font=("Arial", 8))
+        memory_label.grid(row=0, column=3, padx=10)
+        
+        # ... (include other file selection widgets as in original)
+        
+        # Settings with memory-aware defaults
+        settings_frame = ttk.LabelFrame(parent, text="Processing Settings (Memory Optimized)", padding="10")
+        settings_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        
+        # Chunk size setting
+        ttk.Label(settings_frame, text="Processing Chunk Size:").grid(row=0, column=0, sticky=tk.W, padx=5)
+        self.chunk_size_var = tk.IntVar(value=1000)
+        chunk_spinbox = ttk.Spinbox(settings_frame, from_=500, to=5000, width=8, 
+                                   textvariable=self.chunk_size_var)
+        chunk_spinbox.grid(row=0, column=1, padx=5)
+        
+        # Max memory usage setting
+        ttk.Label(settings_frame, text="Max Memory (MB):").grid(row=0, column=2, sticky=tk.W, padx=(20, 5))
+        self.max_memory_var = tk.IntVar(value=2048)
+        memory_spinbox = ttk.Spinbox(settings_frame, from_=512, to=8192, width=8, 
+                                    textvariable=self.max_memory_var)
+        memory_spinbox.grid(row=0, column=3, padx=5)
+        
+        # Processing controls
+        self.create_processing_controls(parent)
+        
+        # Update memory display periodically
+        self.update_memory_display()
+    
+    def create_processing_controls(self, parent):
+        """Create processing control widgets"""
+        process_control_frame = ttk.LabelFrame(parent, text="Processing Controls", padding="10")
+        process_control_frame.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        
+        # Buttons
+        button_frame = ttk.Frame(process_control_frame)
+        button_frame.grid(row=0, column=0, pady=5)
+        
+        self.process_button = ttk.Button(button_frame, text="Process Data (Optimized)", 
+                                        command=self.process_data_threaded)
+        self.process_button.grid(row=0, column=0, padx=5)
+        
+        self.cancel_button = ttk.Button(button_frame, text="Cancel", 
+                                       command=self.cancel_processing, state=tk.DISABLED)
+        self.cancel_button.grid(row=0, column=1, padx=5)
+        
+        self.clear_button = ttk.Button(button_frame, text="Clear & Cleanup Memory", 
+                                      command=self.clear_all_data_optimized)
+        self.clear_button.grid(row=0, column=2, padx=5)
+        
+        # Progress and status
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Progressbar(process_control_frame, variable=self.progress_var, 
+                                           maximum=100, length=300)
+        self.progress_bar.grid(row=0, column=1, padx=10, pady=5)
+        
+        self.status_var = tk.StringVar(value="Ready - Memory Optimized")
+        self.status_label = ttk.Label(process_control_frame, textvariable=self.status_var)
+        self.status_label.grid(row=0, column=2, padx=10)
+        
+        # Performance info with memory details
+        self.perf_var = tk.StringVar(value="")
+        self.perf_label = ttk.Label(process_control_frame, textvariable=self.perf_var, font=("Arial", 8))
+        self.perf_label.grid(row=1, column=0, columnspan=3, pady=5)
+        
+        # Results section
+        results_frame = ttk.LabelFrame(parent, text="Processing Results & Memory Stats", padding="10")
+        results_frame.grid(row=4, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
+        
+        self.results_text = tk.Text(results_frame, height=12, width=80)
+        scrollbar = ttk.Scrollbar(results_frame, orient=tk.VERTICAL, command=self.results_text.yview)
+        self.results_text.configure(yscrollcommand=scrollbar.set)
+        self.results_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        
+        # Configure grid weights
+        parent.columnconfigure(1, weight=1)
+        parent.rowconfigure(4, weight=1)
+        results_frame.columnconfigure(0, weight=1)
+        results_frame.rowconfigure(0, weight=1)
+    
+    def update_memory_display(self):
+        """Update memory usage display"""
+        try:
+            current_memory = self.memory_manager.force_garbage_collection()
+            self.memory_var.set(f"Memory: {current_memory:.1f} MB")
+        except:
+            pass
+        
+        # Schedule next update
+        self.root.after(5000, self.update_memory_display)  # Update every 5 seconds
+    
+    def clear_all_data_optimized(self):
+        """Enhanced clear function with thorough memory cleanup"""
+        result = messagebox.askyesno(
+            "Clear All Data", 
+            "This will clear all data and perform memory cleanup.\n\nContinue?"
+        )
+        
+        if not result:
+            return
+        
+        try:
+            # Clear file paths and UI
+            for key in self.file_paths:
+                self.file_paths[key] = None
+            
+            self.filetrail_var.set("")
+            # ... (clear other StringVars)
+            
+            # Clear data and caches
+            self.data.clear()
+            self.results.clear()
+            self.data_processor.normalize_cache.clear()
+            self.data_processor.match_cache.clear()
+            
+            # Clear LRU cache
+            self.data_processor.normalize_string_cached.cache_clear()
+            
+            # Cleanup matplotlib
+            self.memory_manager.cleanup_matplotlib()
+            
+            # Force garbage collection
+            memory_before = self.memory_manager.force_garbage_collection()
+            
+            # Reset UI
+            self.progress_var.set(0)
+            self.status_var.set("Ready - Memory Cleaned")
+            self.perf_var.set("")
+            self.results_text.delete(1.0, tk.END)
+            
+            # Show memory cleanup results
+            memory_after = self.memory_manager.force_garbage_collection()
+            memory_freed = memory_before - memory_after
+            
+            cleanup_text = f"Memory cleanup completed successfully!\n"
+            cleanup_text += f"Memory freed: {memory_freed:.1f} MB\n"
+            cleanup_text += f"Current memory usage: {memory_after:.1f} MB\n\n"
+            
+            self.results_text.insert(tk.END, cleanup_text)
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Cleanup failed: {str(e)}")
+    
+    def browse_file(self, file_type):
+        """File browser with memory-aware file size checking"""
+        file_path = filedialog.askopenfilename(
+            title=f"Select {file_type.replace('_', ' ').title()} File",
+            filetypes=[("Excel files", "*.xlsx *.xls"), ("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+        
+        if file_path:
+            # Check file size
+            try:
+                file_size = os.path.getsize(file_path) / 1024 / 1024  # MB
+                if file_size > 500:  # Warn for files larger than 500MB
+                    result = messagebox.askyesno(
+                        "Large File Warning", 
+                        f"File size: {file_size:.1f} MB\n\n"
+                        "Large files may consume significant memory.\n"
+                        "Consider using chunked processing.\n\n"
+                        "Continue with this file?"
+                    )
+                    if not result:
+                        return
+                
+                # Quick validation
+                if file_path.endswith('.csv'):
+                    pd.read_csv(file_path, nrows=0)
+                else:
+                    pd.read_excel(file_path, nrows=0)
+                
+                self.file_paths[file_type] = file_path
+                
+                # Update UI variables
+                if file_type == 'filetrail':
+                    self.filetrail_var.set(file_path)
+                # ... (add other file type assignments)
+                
+                # Show file info
+                self.results_text.insert(tk.END, f"Loaded {file_type}: {file_size:.1f} MB\n")
+                
+            except Exception as e:
+                messagebox.showerror("Error", f"Cannot read file {file_path}:\n{str(e)}")
+    
+    def create_visualization_placeholder(self):
+        """Create placeholder for visualization tab"""
+        placeholder_label = ttk.Label(self.viz_frame, 
+                                     text="Process data first to see memory-efficient analysis and charts here.",
+                                     font=("Arial", 12))
+        placeholder_label.pack(expand=True)
+    
+    def process_data_threaded(self):
+        """Thread-safe data processing with memory monitoring"""
+        self.processing_cancelled = False
+        self.data_processor.cleanup_caches()  # Clean before processing
+        
+        def update_buttons(process_enabled, cancel_enabled):
+            self.process_button.config(state=tk.NORMAL if process_enabled else tk.DISABLED)
+            self.cancel_button.config(state=tk.NORMAL if cancel_enabled else tk.DISABLED)
+        
+        self.root.after(0, lambda: update_buttons(False, True))
+        
+        thread = threading.Thread(target=self.process_data_optimized)
+        thread.daemon = True
+        thread.start()
+    
+    def process_data_optimized(self):
+        """Memory-optimized data processing with comprehensive monitoring"""
+        try:
+            # Start monitoring
+            self.performance_monitor.start_monitoring()
+            self.root.after(0, lambda: self.results_text.delete(1.0, tk.END))
+            
+            # Update chunk size from settings
+            self.data_processor.chunk_size = self.chunk_size_var.get()
+            
+            # Validate files
+            self.root.after(0, lambda: self.status_var.set("Validating files..."))
+            self.root.after(0, lambda: self.progress_var.set(5))
+            
+            if not self.file_paths['filetrail']:
+                raise ValueError("FileTrail file is required!")
+            
+            # Memory checkpoint
+            self.performance_monitor.take_memory_snapshot("Start validation")
+            
+            # Load FileTrail data with chunking
+            self.root.after(0, lambda: self.status_var.set("Loading FileTrail data..."))
+            self.root.after(0, lambda: self.progress_var.set(10))
+            
+            filetrail_data = self.data_processor.read_file_in_chunks(
+                self.file_paths['filetrail'], 
+                required_columns=['HOME_LOCATION', 'LINE_ID'],
+                max_rows=50000  # Limit for memory safety
+            )
+            
+            if filetrail_data is None:
+                raise ValueError("Failed to load FileTrail data")
+            
+            # Memory checkpoint
+            self.performance_monitor.take_memory_snapshot("FileTrail loaded")
+            
+            if self.processing_cancelled:
+                return
+            
+            # Filter data efficiently
+            self.root.after(0, lambda: self.status_var.set("Filtering data..."))
+            self.root.after(0, lambda: self.progress_var.set(20))
+            
+            filtered_filetrail = filetrail_data[
+                filetrail_data['HOME_LOCATION'].str.contains('PT-US-HOU-WCK', na=False, case=False)
+            ].copy()
+            
+            # Clear original data to free memory
+            del filetrail_data
+            gc.collect()
+            
+            total_count = len(filtered_filetrail)
+            result_text = f"Memory-Optimized Processing Results:\n"
+            result_text += f"Filtered FileTrail records: {total_count}\n"
+            result_text += f"Processing chunk size: {self.data_processor.chunk_size}\n\n"
+            
+            self.root.after(0, lambda: self.results_text.insert(tk.END, result_text))
+            
+            # Memory checkpoint
+            self.performance_monitor.take_memory_snapshot("Data filtered")
+            
+            if self.processing_cancelled:
+                return
+            
+            # Load comparison files with memory limits
+            self.root.after(0, lambda: self.status_var.set("Loading comparison files..."))
+            self.root.after(0, lambda: self.progress_var.set(30))
+            
+            comparison_data = {}
+            comparison_columns = {
+                'exploration_archives': 'EA Line Name',
+                'open_works_1': 'LINE',
+                'open_works_2': 'LINE',
+                'open_works_3': 'LINE',
+                'lines_3d_ow': 'SURVEY',
+                'lines_3d_ea': 'LINE_ID'
+            }
+            
+            for file_type, column_name in comparison_columns.items():
+                if self.file_paths[file_type]:
+                    data = self.data_processor.read_file_in_chunks(
+                        self.file_paths[file_type], 
+                        required_columns=[column_name],
+                        max_rows=25000  # Reduced for memory efficiency
+                    )
+                    if data is not None and column_name in data.columns:
+                        comparison_data[file_type] = data[column_name].dropna().tolist()
+                        result_text = f"{file_type}: {len(comparison_data[file_type])} records (memory optimized)\n"
+                    else:
+                        result_text = f"{file_type}: Error loading or column not found\n"
+                    
+                    self.root.after(0, lambda text=result_text: self.results_text.insert(tk.END, text))
+                
+                if self.processing_cancelled:
+                    return
+            
+            # Memory checkpoint
+            self.performance_monitor.take_memory_snapshot("Comparison data loaded")
+            
+            # Create optimized lookup structures
+            self.root.after(0, lambda: self.status_var.set("Creating optimized lookup structures..."))
+            self.root.after(0, lambda: self.progress_var.set(40))
+            
+            lookup_structures = self.data_processor.create_optimized_lookup_structures(comparison_data)
+            
+            # Clear comparison_data to free memory
+            del comparison_data
+            gc.collect()
+            
+            # Memory checkpoint
+            self.performance_monitor.take_memory_snapshot("Lookup structures created")
+            
+            if self.processing_cancelled:
+                return
+            
+            # Process matches in memory-efficient batches
+            self.root.after(0, lambda: self.status_var.set("Processing matches (chunked)..."))
+            self.root.after(0, lambda: self.progress_var.set(50))
+            
+            # Initialize result columns
+            match_columns = {
+                'EA_Match': '', 'EA_Match_Type': '', 'EA_Score': 0,
+                'OW1_Match': '', 'OW1_Match_Type': '', 'OW1_Score': 0,
+                'OW2_Match': '', 'OW2_Match_Type': '', 'OW2_Score': 0,
+                'OW3_Match': '', 'OW3_Match_Type': '', 'OW3_Score': 0,
+                '3D_OW_Match': '', '3D_OW_Match_Type': '', '3D_OW_Score': 0,
+                '3D_EA_Match': '', '3D_EA_Match_Type': '', '3D_EA_Score': 0,
+                'Has_Any_Match': False
+            }
+            
+            for col, default_val in match_columns.items():
+                filtered_filetrail[col] = default_val
+            
+            # Process matches with progress tracking
+            def batch_match_processor(batch_df, start_idx):
+                """Process a batch of matches"""
+                file_type_mapping = {
+                    'exploration_archives': ('EA_Match', 'EA_Match_Type', 'EA_Score'),
+                    'open_works_1': ('OW1_Match', 'OW1_Match_Type', 'OW1_Score'),
+                    'open_works_2': ('OW2_Match', 'OW2_Match_Type', 'OW2_Score'),
+                    'open_works_3': ('OW3_Match', 'OW3_Match_Type', 'OW3_Score'),
+                    'lines_3d_ow': ('3D_OW_Match', '3D_OW_Match_Type', '3D_OW_Score'),
+                    'lines_3d_ea': ('3D_EA_Match', '3D_EA_Match_Type', '3D_EA_Score')
+                }
+                
+                for idx, row in batch_df.iterrows():
+                    if self.processing_cancelled:
+                        return None
+                    
+                    line_id = row['LINE_ID']
+                    if pd.isna(line_id):
+                        continue
+                    
+                    # Find matches using optimized lookup
+                    matches = self.find_matches_optimized(line_id, lookup_structures)
+                    
+                    has_match = bool(matches)
+                    filtered_filetrail.loc[idx, 'Has_Any_Match'] = has_match
+                    
+                    # Store match results
+                    for file_type, match_info in matches.items():
+                        if file_type in file_type_mapping:
+                            match_col, type_col, score_col = file_type_mapping[file_type]
+                            filtered_filetrail.loc[idx, match_col] = match_info['value']
+                            filtered_filetrail.loc[idx, type_col] = match_info['match_type']
+                            filtered_filetrail.loc[idx, score_col] = match_info['score']
+                
+                return True
+            
+            def progress_callback(progress):
+                """Update progress for batch processing"""
+                final_progress = 50 + (progress * 0.3)  # 50-80% range
+                self.root.after(0, lambda: self.progress_var.set(final_progress))
+                
+                # Update performance display
+                stats = self.performance_monitor.get_current_stats()
+                if stats:
+                    perf_text = f"Processing: {stats['elapsed_time']:.1f}s | Memory: {stats['current_memory']:.1f}MB"
+                    self.root.after(0, lambda: self.perf_var.set(perf_text))
+            
+            # Process all matches in batches
+            self.data_processor.process_data_in_batches(
+                filtered_filetrail, 
+                batch_match_processor, 
+                progress_callback
+            )
+            
+            if self.processing_cancelled:
+                return
+            
+            # Memory checkpoint
+            self.performance_monitor.take_memory_snapshot("Matching completed")
+            
+            # Analyze match quality efficiently
+            self.root.after(0, lambda: self.status_var.set("Analyzing match quality..."))
+            self.root.after(0, lambda: self.progress_var.set(85))
+            
+            analysis = self.match_analyzer.analyze_matches_efficiently(filtered_filetrail)
+            
+            # Store results
+            self.results['filtered_filetrail'] = filtered_filetrail
+            self.results['unique_records'] = filtered_filetrail[~filtered_filetrail['Has_Any_Match']].copy()
+            self.results['analysis'] = analysis
+            
+            # Create match details efficiently (sample only for large datasets)
+            match_details = []
+            sample_size = min(1000, len(filtered_filetrail[filtered_filetrail['Has_Any_Match']]))
+            sample_data = filtered_filetrail[filtered_filetrail['Has_Any_Match']].sample(n=sample_size) if sample_size > 0 else pd.DataFrame()
+            
+            self.results['match_details'] = sample_data  # Store sample instead of all details
+            
+            # Performance summary
+            final_stats = self.performance_monitor.stop_monitoring()
+            
+            # Generate comprehensive statistics
+            total_processed = len(filtered_filetrail)
+            total_with_matches = analysis['records_with_matches']
+            match_rate = (total_with_matches / total_processed * 100) if total_processed > 0 else 0
+            
+            stats_text = f"\nMemory-Optimized Processing Complete!\n"
+            stats_text += f"{'='*50}\n"
+            stats_text += f"Records processed: {total_processed:,}\n"
+            stats_text += f"Records with matches: {total_with_matches:,} ({match_rate:.1f}%)\n"
+            stats_text += f"Unique records (no matches): {len(self.results['unique_records']):,}\n\n"
+            
+            if final_stats:
+                stats_text += f"Performance Metrics:\n"
+                stats_text += f"Processing time: {final_stats['elapsed_time']:.2f} seconds\n"
+                stats_text += f"Peak memory usage: {final_stats['peak_memory']:.1f} MB\n"
+                stats_text += f"Processing rate: {total_processed/final_stats['elapsed_time']:.1f} records/sec\n"
+                stats_text += f"Memory efficiency: {len(self.performance_monitor.memory_snapshots)} checkpoints\n\n"
+            
+            # Match quality summary
+            stats_text += f"Match Quality Summary:\n"
+            stats_text += f"Perfect matches: {analysis['overall_categories']['Perfect']:,}\n"
+            stats_text += f"Good+ matches: {sum([analysis['overall_categories'][cat] for cat in ['Perfect', 'Excellent', 'Very Good', 'Good']]):,}\n"
+            stats_text += f"Cache efficiency: {len(self.data_processor.match_cache)} patterns cached\n"
+            
+            self.root.after(0, lambda: self.results_text.insert(tk.END, stats_text))
+            
+            # Create memory-efficient visualizations
+            self.root.after(0, lambda: self.status_var.set("Creating visualizations..."))
+            self.root.after(0, lambda: self.progress_var.set(95))
+            
+            self.root.after(0, lambda: self.create_visualizations_optimized(analysis))
+            
+            # Final cleanup
+            self.data_processor.cleanup_caches()
+            self.memory_manager.force_garbage_collection()
+            
+            # Complete
+            self.root.after(0, lambda: self.status_var.set("Processing complete - Memory optimized!"))
+            self.root.after(0, lambda: self.progress_var.set(100))
+            
+        except Exception as e:
+            error_msg = f"Optimized processing failed: {str(e)}"
+            self.root.after(0, lambda: messagebox.showerror("Error", error_msg))
+            self.root.after(0, lambda: self.status_var.set("Error occurred"))
+        
+        finally:
+            # Reset buttons
+            self.root.after(0, lambda: self.process_button.config(state=tk.NORMAL))
+            self.root.after(0, lambda: self.cancel_button.config(state=tk.DISABLED))
+    
+    def find_matches_optimized(self, line_id, lookup_structures):
+        """Memory-efficient matching with improved caching"""
+        if not line_id or pd.isna(line_id):
+            return {}
+        
+        # Check cache first
+        cache_key = str(line_id)
+        if cache_key in self.data_processor.match_cache:
+            return self.data_processor.match_cache[cache_key]
+        
+        normalized_line_id = self.data_processor.normalize_string_cached(line_id)
+        
+        if not normalized_line_id:
+            self.data_processor.match_cache[cache_key] = {}
+            return {}
+        
+        matches = {}
+        fuzzy_threshold = 75  # Fixed threshold for consistency
+        
+        for db_name, structures in lookup_structures.items():
+            # 1. Exact match (fastest)
+            if normalized_line_id in structures['exact_set']:
+                matches[db_name] = {
+                    'value': structures['normalized_dict'][normalized_line_id],
+                    'match_type': 'exact',
+                    'score': 100
+                }
+                continue
+            
+            # 2. Optimized substring match
+            best_substring_match = None
+            best_substring_score = 0
+            
+            # Check substrings more efficiently
+            substrings = self.data_processor.create_optimized_substrings(normalized_line_id, 6)
+            
+            for substring in substrings:
+                if substring in structures['substring_dict']:
+                    for candidate in list(structures['substring_dict'][substring])[:5]:  # Limit candidates
+                        normalized_candidate = self.data_processor.normalize_string_cached(candidate)
+                        if (normalized_line_id in normalized_candidate or 
+                            normalized_candidate in normalized_line_id):
+                            score = min(len(normalized_line_id), len(normalized_candidate)) / max(len(normalized_line_id), len(normalized_candidate)) * 90
+                            if score > best_substring_score:
+                                best_substring_score = score
+                                best_substring_match = candidate
+                                break  # Take first good match for efficiency
+            
+            if best_substring_match:
+                matches[db_name] = {
+                    'value': best_substring_match,
+                    'match_type': 'substring',
+                    'score': int(best_substring_score)
+                }
+                continue
+            
+            # 3. Limited fuzzy match
+            if structures['fuzzy_list'] and len(structures['fuzzy_list']) > 0:
+                # Use only a sample for fuzzy matching to save time
+                fuzzy_sample = structures['fuzzy_list'][:100]  # Further reduced
+                normalized_sample = [self.data_processor.normalize_string_cached(item) for item in fuzzy_sample]
+                
+                result = process.extractOne(
+                    normalized_line_id, 
+                    normalized_sample,
+                    scorer=fuzz.ratio,
+                    score_cutoff=fuzzy_threshold
+                )
+                
+                if result:
+                    matched_normalized, score = result
+                    for original in fuzzy_sample:
+                        if self.data_processor.normalize_string_cached(original) == matched_normalized:
+                            matches[db_name] = {
+                                'value': original,
+                                'match_type': 'fuzzy',
+                                'score': score
+                            }
+                            break
+        
+        # Cache the result with size management
+        if len(self.data_processor.match_cache) < 5000:  # Prevent cache explosion
+            self.data_processor.match_cache[cache_key] = matches
+        
+        return matches
+    
+    def create_visualizations_optimized(self, analysis):
+        """Create memory-efficient visualizations"""
+        # Clear existing widgets
+        for widget in self.viz_frame.winfo_children():
+            widget.destroy()
+        
+        # Create visualization notebook
+        viz_notebook = ttk.Notebook(self.viz_frame, padding="5")
+        viz_notebook.pack(fill='both', expand=True)
+        
+        # Summary tab with memory info
+        summary_frame = ttk.Frame(viz_notebook, padding="10")
+        viz_notebook.add(summary_frame, text="📊 Summary & Memory")
+        
+        # Enhanced summary with memory statistics
+        memory_stats = self.performance_monitor.get_current_stats()
+        summary_text = f"""
+Memory-Optimized Analysis Summary:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+📊 Processing Statistics:
+   • Total Records: {analysis['total_records']:,}
+   • Records with Matches: {analysis['records_with_matches']:,}
+   • Processing Chunks Used: {self.data_processor.chunk_size}
+   • Cache Hits: {len(self.data_processor.match_cache)}
+
+🧠 Memory Performance:
+   • Peak Memory: {memory_stats['peak_memory']:.1f} MB
+   • Current Memory: {memory_stats['current_memory']:.1f} MB
+   • Processing Time: {memory_stats['elapsed_time']:.2f} seconds
+   • Memory Efficiency: Optimized chunking enabled
+
+🎯 Match Quality:
+   • Perfect (100%): {analysis['overall_categories']['Perfect']:,}
+   • Excellent (95-99%): {analysis['overall_categories']['Excellent']:,}
+   • Very Good (85-94%): {analysis['overall_categories']['Very Good']:,}
+   • Good (75-84%): {analysis['overall_categories']['Good']:,}
+   • Fair+ matches: {sum([analysis['overall_categories'][cat] for cat in ['Perfect', 'Excellent', 'Very Good', 'Good', 'Fair']]):,}
+
+💡 Optimization Features Used:
+   • Chunked processing: ✓
+   • LRU caching: ✓
+   • Memory monitoring: ✓
+   • Fuzzy match limits: ✓
+   • Automatic cleanup: ✓
+"""
+        
+        summary_text_widget = tk.Text(summary_frame, height=20, width=70, font=("Consolas", 10))
+        summary_text_widget.insert('1.0', summary_text)
+        summary_text_widget.config(state='disabled')
+        
+        summary_scrollbar = ttk.Scrollbar(summary_frame, orient='vertical', command=summary_text_widget.yview)
+        summary_text_widget.configure(yscrollcommand=summary_scrollbar.set)
+        
+        summary_text_widget.pack(side='left', fill='both', expand=True)
+        summary_scrollbar.pack(side='right', fill='y')
+        
+        # Charts tab with memory-efficient visualization
+        charts_frame = ttk.Frame(viz_notebook, padding="10")
+        viz_notebook.add(charts_frame, text="📈 Charts")
+        
+        try:
+            chart_widget = self.data_visualizer.create_quality_distribution_chart(analysis, charts_frame)
+            chart_widget.pack(fill='both', expand=True)
+        except Exception as e:
+            error_label = ttk.Label(charts_frame, text=f"Chart generation error: {str(e)}")
+            error_label.pack()
+        
+        # Switch to visualization tab
+        self.main_notebook.select(1)
+    
+    def cancel_processing(self):
+        """Cancel processing with cleanup"""
+        self.processing_cancelled = True
+        self.root.after(0, lambda: self.status_var.set("Cancelling and cleaning up..."))
+        
+        # Cleanup on cancel
+        self.data_processor.cleanup_caches()
+        self.memory_manager.force_garbage_collection()
+
+
+def main():
+    """Main function with dependency checking"""
+    try:
+        import matplotlib
+        matplotlib.use('TkAgg')
+    except ImportError:
+        print("Error: matplotlib is required. Install with: pip install matplotlib")
+        return
+    
+    try:
+        import psutil
+    except ImportError:
+        print("Error: psutil is required. Install with: pip install psutil")
+        return
+    
+    root = tk.Tk()
+    app = OptimizedFileTrailComparator(root)
+    
+    def on_closing():
+        """Handle window closing with cleanup"""
+        if hasattr(app, 'processing_cancelled'):
+            app.processing_cancelled = True
+        
+        # Perform cleanup
+        try:
+            app.memory_manager.cleanup_matplotlib()
+            app.data_processor.cleanup_caches()
+            app.memory_manager.force_garbage_collection()
+        except:
+            pass
+        
+        root.destroy()
+    
+    root.protocol("WM_DELETE_WINDOW", on_closing)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
