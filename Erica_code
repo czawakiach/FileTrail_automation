@@ -1,319 +1,281 @@
 import pandas as pd
-import numpy as np
-from difflib import SequenceMatcher
-import re
-from typing import List, Tuple, Dict
-import openpyxl
-from pathlib import Path
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+from fuzzywuzzy import fuzz
+import os
+from datetime import datetime
+import threading
 
-class LineNameMatcher:
-    """
-    A comprehensive fuzzy matching system for line names with scoring algorithm.
-    Designed for Excel data with columns A (On Map) and F (Line Name).
-    """
+class ExcelFuzzyMatcher:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("Excel Fuzzy Line Name Matcher")
+        self.root.geometry("600x400")
+        
+        # Variables
+        self.file_path = tk.StringVar()
+        self.progress = tk.DoubleVar()
+        self.status_text = tk.StringVar(value="Ready to process Excel file...")
+        
+        self.setup_gui()
+        
+    def setup_gui(self):
+        # Main frame
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # Title
+        title_label = ttk.Label(main_frame, text="Excel Fuzzy Line Name Matcher", 
+                               font=("Arial", 16, "bold"))
+        title_label.grid(row=0, column=0, columnspan=3, pady=(0, 20))
+        
+        # File selection
+        ttk.Label(main_frame, text="Select Excel File:").grid(row=1, column=0, sticky=tk.W, pady=5)
+        
+        file_frame = ttk.Frame(main_frame)
+        file_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=5)
+        
+        self.file_entry = ttk.Entry(file_frame, textvariable=self.file_path, width=60)
+        self.file_entry.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=(0, 10))
+        
+        browse_btn = ttk.Button(file_frame, text="Browse", command=self.browse_file)
+        browse_btn.grid(row=0, column=1)
+        
+        file_frame.columnconfigure(0, weight=1)
+        
+        # Instructions
+        instructions = """
+Instructions:
+1. Select your Excel file (.xlsx format)
+2. The program will analyze Column A ("On Map") and Column F ("Line Name")
+3. It will find fuzzy matches between lines with blank Column A and lines with "Y" in Column A
+4. Results will be saved to a new Excel file with match scores (0-100 points)
+5. Match quality: 90-100 (Excellent), 80-89 (Good), 70-79 (Fair), <70 (Poor)
+        """
+        
+        instructions_label = ttk.Label(main_frame, text=instructions, justify=tk.LEFT, 
+                                     background="lightgray", relief="sunken", padding=10)
+        instructions_label.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=20)
+        
+        # Process button
+        self.process_btn = ttk.Button(main_frame, text="Process File", 
+                                    command=self.start_processing, style="Accent.TButton")
+        self.process_btn.grid(row=4, column=0, columnspan=3, pady=10)
+        
+        # Progress bar
+        self.progress_bar = ttk.Progressbar(main_frame, variable=self.progress, 
+                                          maximum=100, length=400)
+        self.progress_bar.grid(row=5, column=0, columnspan=3, pady=10, sticky=(tk.W, tk.E))
+        
+        # Status label
+        self.status_label = ttk.Label(main_frame, textvariable=self.status_text)
+        self.status_label.grid(row=6, column=0, columnspan=3, pady=5)
+        
+        # Configure grid weights
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+        main_frame.columnconfigure(0, weight=1)
+        
+    def browse_file(self):
+        filename = filedialog.askopenfilename(
+            title="Select Excel File",
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
+        )
+        if filename:
+            self.file_path.set(filename)
     
-    def __init__(self, min_threshold: int = 30):
-        self.min_threshold = min_threshold
-        self.results = []
-        
-    def calculate_similarity(self, str1: str, str2: str) -> int:
-        """
-        Calculate similarity score between two strings (0-100).
-        
-        Args:
-            str1, str2: Strings to compare
+    def start_processing(self):
+        if not self.file_path.get():
+            messagebox.showerror("Error", "Please select an Excel file first!")
+            return
             
-        Returns:
-            int: Similarity score (0-100)
-        """
-        # Normalize strings - trim and convert to lowercase
-        norm1 = str1.strip().lower()
-        norm2 = str2.strip().lower()
+        # Disable button during processing
+        self.process_btn.config(state='disabled')
         
-        # Exact match
-        if norm1 == norm2:
-            return 100
-        
-        max_score = 0
-        
-        # 1. Substring matching (bidirectional)
-        if norm1 in norm2 or norm2 in norm1:
-            longer = norm1 if len(norm1) > len(norm2) else norm2
-            shorter = norm2 if len(norm1) > len(norm2) else norm1
-            substring_score = (len(shorter) / len(longer)) * 85 + 10
-            max_score = max(max_score, substring_score)
-        
-        # 2. Token-based matching (split by common delimiters)
-        tokens1 = [t for t in re.split(r'[\s_\-\.]+', norm1) if t]
-        tokens2 = [t for t in re.split(r'[\s_\-\.]+', norm2) if t]
-        
-        if tokens1 and tokens2:
-            common_tokens = 0
-            total_tokens = max(len(tokens1), len(tokens2))
-            
-            for token1 in tokens1:
-                if token1 in tokens2:
-                    common_tokens += 1
-            
-            if common_tokens > 0:
-                token_score = (common_tokens / total_tokens) * 80
-                max_score = max(max_score, token_score)
-        
-        # 3. Sequence matching (using difflib)
-        sequence_ratio = SequenceMatcher(None, norm1, norm2).ratio()
-        sequence_score = sequence_ratio * 75
-        max_score = max(max_score, sequence_score)
-        
-        # 4. Numeric pattern matching
-        nums1 = re.findall(r'\d+', norm1)
-        nums2 = re.findall(r'\d+', norm2)
-        
-        if nums1 and nums2:
-            num_matches = len(set(nums1) & set(nums2))
-            if num_matches > 0:
-                num_score = (num_matches / max(len(nums1), len(nums2))) * 60
-                max_score = max(max_score, num_score)
-        
-        # 5. Alphabetic pattern matching (for codes like E_SP, GS)
-        alpha_pattern1 = re.findall(r'[A-Za-z]{2,}', norm1)
-        alpha_pattern2 = re.findall(r'[A-Za-z]{2,}', norm2)
-        
-        if alpha_pattern1 and alpha_pattern2:
-            alpha_matches = len(set(alpha_pattern1) & set(alpha_pattern2))
-            if alpha_matches > 0:
-                alpha_score = (alpha_matches / max(len(alpha_pattern1), len(alpha_pattern2))) * 65
-                max_score = max(max_score, alpha_score)
-        
-        return round(max_score)
+        # Start processing in a separate thread to keep GUI responsive
+        thread = threading.Thread(target=self.process_file)
+        thread.daemon = True
+        thread.start()
     
-    def find_matches_from_excel(self, file_path: str, output_file: str = None) -> pd.DataFrame:
-        """
-        Process Excel file directly and find matches.
-        
-        Args:
-            file_path: Path to Excel file
-            output_file: Optional path for output Excel file
-            
-        Returns:
-            DataFrame with results
-        """
+    def update_progress(self, value, message):
+        self.progress.set(value)
+        self.status_text.set(message)
+        self.root.update_idletasks()
+    
+    def process_file(self):
         try:
-            # Read the Excel file
-            print(f"Reading Excel file: {file_path}")
+            file_path = self.file_path.get()
+            
+            # Step 1: Read Excel file
+            self.update_progress(10, "Reading Excel file...")
             df = pd.read_excel(file_path)
             
             # Check if required columns exist
-            if 'A' not in df.columns and 0 not in df.columns:
-                # Try to use the first column
-                on_map_col = df.iloc[:, 0]  # Column A (first column)
-                print("Using first column as 'On Map' column")
-            else:
-                on_map_col = df.iloc[:, 0]  # Column A
+            if 'A' not in df.columns and len(df.columns) < 1:
+                raise ValueError("Column A not found in the Excel file")
+            if 'F' not in df.columns and len(df.columns) < 6:
+                raise ValueError("Column F not found in the Excel file")
             
-            if 'F' not in df.columns and 5 not in df.columns:
-                # Try to use the 6th column (index 5)
-                line_name_col = df.iloc[:, 5]  # Column F (6th column)
-                print("Using 6th column as 'Line Name' column")
-            else:
-                line_name_col = df.iloc[:, 5]  # Column F
+            # Use column indices if column names are not A and F
+            col_a = df.iloc[:, 0]  # Column A (index 0)
+            col_f = df.iloc[:, 5]  # Column F (index 5)
             
-            # Create a working dataframe
-            work_df = pd.DataFrame({
-                'on_map': on_map_col,
-                'line_name': line_name_col
-            })
+            self.update_progress(20, "Processing data...")
             
-            # Clean and filter data
-            work_df = work_df.dropna(subset=['line_name'])  # Remove rows with no line name
-            work_df['line_name'] = work_df['line_name'].astype(str).str.strip()
-            work_df = work_df[work_df['line_name'] != '']  # Remove empty line names
+            # Step 2: Filter data
+            # Create a copy of the dataframe for our analysis
+            analysis_df = df.copy()
+            analysis_df['On_Map'] = col_a
+            analysis_df['Line_Name'] = col_f
             
-            # Separate unmapped and mapped lines
-            unmapped_lines = work_df[work_df['on_map'].isna() | (work_df['on_map'] == '')]['line_name'].tolist()
-            mapped_lines = work_df[work_df['on_map'] == 'Y']['line_name'].tolist()
+            # Filter out rows where Line_Name is empty/NaN
+            analysis_df = analysis_df.dropna(subset=['Line_Name'])
+            analysis_df = analysis_df[analysis_df['Line_Name'].astype(str).str.strip() != '']
             
-            print(f"Found {len(unmapped_lines)} unmapped lines")
-            print(f"Found {len(mapped_lines)} mapped lines")
+            # Separate data based on Column A
+            blank_rows = analysis_df[analysis_df['On_Map'].isna() | (analysis_df['On_Map'].astype(str).str.strip() == '')]
+            y_rows = analysis_df[analysis_df['On_Map'].astype(str).str.upper().str.strip() == 'Y']
             
-            return self.find_matches(unmapped_lines, mapped_lines, output_file)
+            self.update_progress(30, f"Found {len(blank_rows)} blank rows and {len(y_rows)} 'Y' rows...")
             
-        except Exception as e:
-            print(f"Error reading Excel file: {e}")
-            return pd.DataFrame()
-    
-    def find_matches(self, unmapped_lines: List[str], mapped_lines: List[str], 
-                    output_file: str = None) -> pd.DataFrame:
-        """
-        Find matches between unmapped and mapped line names.
-        
-        Args:
-            unmapped_lines: List of unmapped line names
-            mapped_lines: List of mapped line names  
-            output_file: Optional path for output Excel file
+            if len(blank_rows) == 0 or len(y_rows) == 0:
+                raise ValueError("No data to compare. Check if you have both blank and 'Y' values in Column A with corresponding Line Names.")
             
-        Returns:
-            DataFrame with results
-        """
-        results = []
-        total_matches = 0
-        high_score_matches = 0
-        
-        print(f"Processing {len(unmapped_lines)} unmapped lines against {len(mapped_lines)} mapped lines...")
-        print(f"Minimum threshold: {self.min_threshold}")
-        
-        for i, unmapped in enumerate(unmapped_lines):
-            if i % 100 == 0 and i > 0:
-                print(f"Processed {i}/{len(unmapped_lines)} unmapped lines...")
+            # Step 3: Perform fuzzy matching
+            self.update_progress(40, "Performing fuzzy matching...")
             
             matches = []
+            total_comparisons = len(blank_rows) * len(y_rows)
+            current_comparison = 0
             
-            for mapped in mapped_lines:
-                score = self.calculate_similarity(unmapped, mapped)
-                if score >= self.min_threshold:
-                    matches.append({
-                        'mapped_name': mapped,
-                        'score': score
-                    })
-                    total_matches += 1
-                    if score >= 80:
-                        high_score_matches += 1
+            for blank_idx, blank_row in blank_rows.iterrows():
+                blank_line = str(blank_row['Line_Name']).strip()
+                
+                for y_idx, y_row in y_rows.iterrows():
+                    y_line = str(y_row['Line_Name']).strip()
+                    
+                    # Calculate similarity score
+                    similarity = fuzz.ratio(blank_line.lower(), y_line.lower())
+                    
+                    if similarity > 0:  # Store all matches, user can filter later
+                        matches.append({
+                            'Blank_Row_Index': blank_idx,
+                            'Blank_Line_Name': blank_line,
+                            'Y_Row_Index': y_idx,
+                            'Y_Line_Name': y_line,
+                            'Similarity_Score': similarity,
+                            'Match_Quality': self.get_match_quality(similarity)
+                        })
+                    
+                    current_comparison += 1
+                    if current_comparison % 100 == 0:
+                        progress = 40 + (current_comparison / total_comparisons) * 30
+                        self.update_progress(progress, f"Matching... {current_comparison}/{total_comparisons}")
             
-            if matches:
-                # Sort matches by score (descending)
-                matches.sort(key=lambda x: x['score'], reverse=True)
+            self.update_progress(70, "Creating results...")
+            
+            # Step 4: Create results dataframe
+            matches_df = pd.DataFrame(matches)
+            
+            # Sort by similarity score (highest first)
+            matches_df = matches_df.sort_values('Similarity_Score', ascending=False)
+            
+            # Step 5: Save results to new Excel file
+            self.update_progress(80, "Saving results...")
+            
+            # Create output filename
+            base_name = os.path.splitext(os.path.basename(file_path))[0]
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = os.path.join(os.path.dirname(file_path), 
+                                     f"{base_name}_fuzzy_matches_{timestamp}.xlsx")
+            
+            with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+                # Original data sheet
+                df.to_sheet(writer, sheet_name='Original_Data', index=False)
                 
-                for match in matches:
-                    results.append({
-                        'unmapped_name': unmapped,
-                        'mapped_name': match['mapped_name'],
-                        'similarity_score': match['score'],
-                        'confidence_level': self._get_confidence_level(match['score'])
-                    })
-        
-        # Create results DataFrame
-        results_df = pd.DataFrame(results)
-        
-        # Print statistics
-        print(f"\n=== MATCHING RESULTS ===")
-        print(f"Unmapped lines with matches: {len(set([r['unmapped_name'] for r in results]))}")
-        print(f"Total unmapped lines: {len(unmapped_lines)}")
-        print(f"Total matches found: {total_matches}")
-        print(f"High confidence matches (≥80): {high_score_matches}")
-        
-        # Save to Excel if requested
-        if output_file and not results_df.empty:
-            self._save_results_to_excel(results_df, output_file, unmapped_lines, mapped_lines)
-        
-        return results_df
-    
-    def _get_confidence_level(self, score: int) -> str:
-        """Get confidence level based on score."""
-        if score >= 80:
-            return "High"
-        elif score >= 50:
-            return "Medium"
-        else:
-            return "Low"
-    
-    def _save_results_to_excel(self, results_df: pd.DataFrame, output_file: str, 
-                              unmapped_lines: List[str], mapped_lines: List[str]):
-        """Save results to Excel with multiple sheets."""
-        try:
-            with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-                # Main results
-                results_df.to_excel(writer, sheet_name='Matches', index=False)
+                # Matches sheet
+                matches_df.to_excel(writer, sheet_name='Fuzzy_Matches', index=False)
                 
-                # Summary statistics
+                # Summary sheet
                 summary_data = {
                     'Metric': [
-                        'Total Unmapped Lines',
-                        'Total Mapped Lines', 
-                        'Unmapped Lines with Matches',
-                        'Total Matches Found',
-                        'High Confidence Matches (≥80)',
-                        'Medium Confidence Matches (50-79)',
-                        'Low Confidence Matches (<50)'
+                        'Total Blank Rows (Column A)',
+                        'Total Y Rows (Column A)', 
+                        'Total Potential Matches Found',
+                        'Excellent Matches (90-100%)',
+                        'Good Matches (80-89%)',
+                        'Fair Matches (70-79%)',
+                        'Poor Matches (<70%)'
                     ],
                     'Count': [
-                        len(unmapped_lines),
-                        len(mapped_lines),
-                        len(results_df['unmapped_name'].unique()),
-                        len(results_df),
-                        len(results_df[results_df['similarity_score'] >= 80]),
-                        len(results_df[(results_df['similarity_score'] >= 50) & (results_df['similarity_score'] < 80)]),
-                        len(results_df[results_df['similarity_score'] < 50])
+                        len(blank_rows),
+                        len(y_rows),
+                        len(matches_df),
+                        len(matches_df[matches_df['Similarity_Score'] >= 90]),
+                        len(matches_df[(matches_df['Similarity_Score'] >= 80) & (matches_df['Similarity_Score'] < 90)]),
+                        len(matches_df[(matches_df['Similarity_Score'] >= 70) & (matches_df['Similarity_Score'] < 80)]),
+                        len(matches_df[matches_df['Similarity_Score'] < 70])
                     ]
                 }
+                
                 summary_df = pd.DataFrame(summary_data)
                 summary_df.to_excel(writer, sheet_name='Summary', index=False)
-                
-                # Top matches (score >= 80)
-                top_matches = results_df[results_df['similarity_score'] >= 80]
-                if not top_matches.empty:
-                    top_matches.to_excel(writer, sheet_name='High_Confidence', index=False)
             
-            print(f"Results saved to: {output_file}")
+            self.update_progress(100, f"Complete! Results saved to: {output_path}")
+            
+            # Show completion message
+            message = f"""Processing completed successfully!
+
+Results saved to: {output_path}
+
+Summary:
+- {len(blank_rows)} lines with blank Column A
+- {len(y_rows)} lines with 'Y' in Column A  
+- {len(matches_df)} potential matches found
+- {len(matches_df[matches_df['Similarity_Score'] >= 80])} good matches (80%+ similarity)
+
+The Excel file contains 3 sheets:
+1. Original_Data - Your original data
+2. Fuzzy_Matches - All matches with similarity scores
+3. Summary - Statistical summary"""
+            
+            messagebox.showinfo("Success", message)
             
         except Exception as e:
-            print(f"Error saving to Excel: {e}")
-    
-    def print_top_matches(self, results_df: pd.DataFrame, limit: int = 10):
-        """Print top matches to console."""
-        if results_df.empty:
-            print("No matches found.")
-            return
+            error_msg = f"Error processing file: {str(e)}"
+            self.update_progress(0, error_msg)
+            messagebox.showerror("Error", error_msg)
         
-        print(f"\n=== TOP {limit} MATCHES ===")
-        top_matches = results_df.nlargest(limit, 'similarity_score')
-        
-        for _, row in top_matches.iterrows():
-            print(f"Score: {row['similarity_score']}% | {row['unmapped_name']} → {row['mapped_name']}")
-
-
-def main():
-    """
-    Main function - modify this section to use with your data.
-    """
+        finally:
+            # Re-enable the button
+            self.process_btn.config(state='normal')
     
-    # Initialize matcher with minimum threshold
-    matcher = LineNameMatcher(min_threshold=30)
+    def get_match_quality(self, score):
+        if score >= 90:
+            return "Excellent"
+        elif score >= 80:
+            return "Good"
+        elif score >= 70:
+            return "Fair"
+        else:
+            return "Poor"
     
-    # Option 1: Process Excel file directly
-    excel_file_path = "your_file.xlsx"  # Replace with your file path
-    output_file_path = "matching_results.xlsx"
-    
-    # Uncomment to process Excel file:
-    # results = matcher.find_matches_from_excel(excel_file_path, output_file_path)
-    
-    # Option 2: Manual input for testing
-    # Sample data based on your examples
-    unmapped_test = [
-        "48_E_SP 1674-1376",
-        "3_SP454-350-GS", 
-        "Line_Test_123",
-        "SAMPLE_A_456"
-    ]
-    
-    mapped_test = [
-        "48_E_SP 1674-1377",
-        "3_SP454-351-GS",
-        "Line_Test_124", 
-        "SAMPLE_B_456"
-    ]
-    
-    # Find matches with test data
-    print("Running with sample data...")
-    results = matcher.find_matches(unmapped_test, mapped_test, "sample_results.xlsx")
-    
-    # Display top matches
-    if not results.empty:
-        matcher.print_top_matches(results, limit=20)
-        print(f"\nFull results shape: {results.shape}")
-        print("\nSample results:")
-        print(results.head(10).to_string(index=False))
-    else:
-        print("No results to display.")
-
+    def run(self):
+        self.root.mainloop()
 
 if __name__ == "__main__":
-    main()
+    # Check if required libraries are installed
+    try:
+        import pandas as pd
+        import tkinter as tk
+        from tkinter import filedialog, messagebox, ttk
+        from fuzzywuzzy import fuzz
+        import openpyxl  # Required for Excel writing
+    except ImportError as e:
+        print(f"Missing required library: {e}")
+        print("\nPlease install required libraries:")
+        print("pip install pandas fuzzywuzzy python-levenshtein openpyxl")
+        exit(1)
+    
+    app = ExcelFuzzyMatcher()
+    app.run()
