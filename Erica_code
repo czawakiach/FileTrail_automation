@@ -50,7 +50,7 @@ Instructions:
 2. The program will analyze Column A ("On Map") and Column F ("Line Name")
 3. It will find fuzzy matches between lines with blank Column A and lines with "Y" in Column A
 4. Results will be saved to a new Excel file with match scores (0-100 points)
-5. Match quality: 90-100 (Excellent), 80-89 (Good), 70-79 (Fair), <70 (Poor)
+5. Match quality: 100 (Exact), 90-99 (Good), 70-89 (Fair), <70 (Not saved)
         """
         
         instructions_label = ttk.Label(main_frame, text=instructions, justify=tk.LEFT, 
@@ -157,7 +157,7 @@ Instructions:
                     # Calculate similarity score
                     similarity = fuzz.ratio(blank_line.lower(), y_line.lower())
                     
-                    if similarity > 0:  # Store all matches, user can filter later
+                    if similarity >= 70:  # Only store matches with 70+ points
                         matches.append({
                             'Blank_Row_Index': blank_idx,
                             'Blank_Line_Name': blank_line,
@@ -201,20 +201,18 @@ Instructions:
                     'Metric': [
                         'Total Blank Rows (Column A)',
                         'Total Y Rows (Column A)', 
-                        'Total Potential Matches Found',
-                        'Excellent Matches (90-100%)',
-                        'Good Matches (80-89%)',
-                        'Fair Matches (70-79%)',
-                        'Poor Matches (<70%)'
+                        'Total Potential Matches Found (70%+)',
+                        'Exact Matches (100%)',
+                        'Good Matches (90-99%)',
+                        'Fair Matches (70-89%)'
                     ],
                     'Count': [
                         len(blank_rows),
                         len(y_rows),
                         len(matches_df),
-                        len(matches_df[matches_df['Similarity_Score'] >= 90]),
-                        len(matches_df[(matches_df['Similarity_Score'] >= 80) & (matches_df['Similarity_Score'] < 90)]),
-                        len(matches_df[(matches_df['Similarity_Score'] >= 70) & (matches_df['Similarity_Score'] < 80)]),
-                        len(matches_df[matches_df['Similarity_Score'] < 70])
+                        len(matches_df[matches_df['Similarity_Score'] == 100]),
+                        len(matches_df[(matches_df['Similarity_Score'] >= 90) & (matches_df['Similarity_Score'] < 100)]),
+                        len(matches_df[matches_df['Similarity_Score'] >= 70])
                     ]
                 }
                 
@@ -231,8 +229,8 @@ Results saved to: {output_path}
 Summary:
 - {len(blank_rows)} lines with blank Column A
 - {len(y_rows)} lines with 'Y' in Column A  
-- {len(matches_df)} potential matches found
-- {len(matches_df[matches_df['Similarity_Score'] >= 80])} good matches (80%+ similarity)
+- {len(matches_df)} matches found (70%+ similarity only)
+- {len(matches_df[matches_df['Similarity_Score'] >= 90])} good+ matches (90%+ similarity)
 
 The Excel file contains 3 sheets:
 1. Original_Data - Your original data
@@ -251,10 +249,12 @@ The Excel file contains 3 sheets:
             self.process_btn.config(state='normal')
     
     def get_match_quality(self, score):
-        if score >= 90:
-            return "Excellent"
-        elif score >= 80:
+        if score == 100:
+            return "Exact"
+        elif score >= 90:
             return "Good"
+        elif score >= 80:
+            return "Fair"
         elif score >= 70:
             return "Fair"
         else:
