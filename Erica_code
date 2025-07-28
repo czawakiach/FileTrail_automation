@@ -191,7 +191,7 @@ Instructions:
             
             with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
                 # Original data sheet
-                df.to_sheet(writer, sheet_name='Original_Data', index=False)
+                df.to_excel(writer, sheet_name='Original_Data', index=False)
                 
                 # Matches sheet
                 matches_df.to_excel(writer, sheet_name='Fuzzy_Matches', index=False)
