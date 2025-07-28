@@ -1,0 +1,319 @@
+import pandas as pd
+import numpy as np
+from difflib import SequenceMatcher
+import re
+from typing import List, Tuple, Dict
+import openpyxl
+from pathlib import Path
+
+class LineNameMatcher:
+    """
+    A comprehensive fuzzy matching system for line names with scoring algorithm.
+    Designed for Excel data with columns A (On Map) and F (Line Name).
+    """
+    
+    def __init__(self, min_threshold: int = 30):
+        self.min_threshold = min_threshold
+        self.results = []
+        
+    def calculate_similarity(self, str1: str, str2: str) -> int:
+        """
+        Calculate similarity score between two strings (0-100).
+        
+        Args:
+            str1, str2: Strings to compare
+            
+        Returns:
+            int: Similarity score (0-100)
+        """
+        # Normalize strings - trim and convert to lowercase
+        norm1 = str1.strip().lower()
+        norm2 = str2.strip().lower()
+        
+        # Exact match
+        if norm1 == norm2:
+            return 100
+        
+        max_score = 0
+        
+        # 1. Substring matching (bidirectional)
+        if norm1 in norm2 or norm2 in norm1:
+            longer = norm1 if len(norm1) > len(norm2) else norm2
+            shorter = norm2 if len(norm1) > len(norm2) else norm1
+            substring_score = (len(shorter) / len(longer)) * 85 + 10
+            max_score = max(max_score, substring_score)
+        
+        # 2. Token-based matching (split by common delimiters)
+        tokens1 = [t for t in re.split(r'[\s_\-\.]+', norm1) if t]
+        tokens2 = [t for t in re.split(r'[\s_\-\.]+', norm2) if t]
+        
+        if tokens1 and tokens2:
+            common_tokens = 0
+            total_tokens = max(len(tokens1), len(tokens2))
+            
+            for token1 in tokens1:
+                if token1 in tokens2:
+                    common_tokens += 1
+            
+            if common_tokens > 0:
+                token_score = (common_tokens / total_tokens) * 80
+                max_score = max(max_score, token_score)
+        
+        # 3. Sequence matching (using difflib)
+        sequence_ratio = SequenceMatcher(None, norm1, norm2).ratio()
+        sequence_score = sequence_ratio * 75
+        max_score = max(max_score, sequence_score)
+        
+        # 4. Numeric pattern matching
+        nums1 = re.findall(r'\d+', norm1)
+        nums2 = re.findall(r'\d+', norm2)
+        
+        if nums1 and nums2:
+            num_matches = len(set(nums1) & set(nums2))
+            if num_matches > 0:
+                num_score = (num_matches / max(len(nums1), len(nums2))) * 60
+                max_score = max(max_score, num_score)
+        
+        # 5. Alphabetic pattern matching (for codes like E_SP, GS)
+        alpha_pattern1 = re.findall(r'[A-Za-z]{2,}', norm1)
+        alpha_pattern2 = re.findall(r'[A-Za-z]{2,}', norm2)
+        
+        if alpha_pattern1 and alpha_pattern2:
+            alpha_matches = len(set(alpha_pattern1) & set(alpha_pattern2))
+            if alpha_matches > 0:
+                alpha_score = (alpha_matches / max(len(alpha_pattern1), len(alpha_pattern2))) * 65
+                max_score = max(max_score, alpha_score)
+        
+        return round(max_score)
+    
+    def find_matches_from_excel(self, file_path: str, output_file: str = None) -> pd.DataFrame:
+        """
+        Process Excel file directly and find matches.
+        
+        Args:
+            file_path: Path to Excel file
+            output_file: Optional path for output Excel file
+            
+        Returns:
+            DataFrame with results
+        """
+        try:
+            # Read the Excel file
+            print(f"Reading Excel file: {file_path}")
+            df = pd.read_excel(file_path)
+            
+            # Check if required columns exist
+            if 'A' not in df.columns and 0 not in df.columns:
+                # Try to use the first column
+                on_map_col = df.iloc[:, 0]  # Column A (first column)
+                print("Using first column as 'On Map' column")
+            else:
+                on_map_col = df.iloc[:, 0]  # Column A
+            
+            if 'F' not in df.columns and 5 not in df.columns:
+                # Try to use the 6th column (index 5)
+                line_name_col = df.iloc[:, 5]  # Column F (6th column)
+                print("Using 6th column as 'Line Name' column")
+            else:
+                line_name_col = df.iloc[:, 5]  # Column F
+            
+            # Create a working dataframe
+            work_df = pd.DataFrame({
+                'on_map': on_map_col,
+                'line_name': line_name_col
+            })
+            
+            # Clean and filter data
+            work_df = work_df.dropna(subset=['line_name'])  # Remove rows with no line name
+            work_df['line_name'] = work_df['line_name'].astype(str).str.strip()
+            work_df = work_df[work_df['line_name'] != '']  # Remove empty line names
+            
+            # Separate unmapped and mapped lines
+            unmapped_lines = work_df[work_df['on_map'].isna() | (work_df['on_map'] == '')]['line_name'].tolist()
+            mapped_lines = work_df[work_df['on_map'] == 'Y']['line_name'].tolist()
+            
+            print(f"Found {len(unmapped_lines)} unmapped lines")
+            print(f"Found {len(mapped_lines)} mapped lines")
+            
+            return self.find_matches(unmapped_lines, mapped_lines, output_file)
+            
+        except Exception as e:
+            print(f"Error reading Excel file: {e}")
+            return pd.DataFrame()
+    
+    def find_matches(self, unmapped_lines: List[str], mapped_lines: List[str], 
+                    output_file: str = None) -> pd.DataFrame:
+        """
+        Find matches between unmapped and mapped line names.
+        
+        Args:
+            unmapped_lines: List of unmapped line names
+            mapped_lines: List of mapped line names  
+            output_file: Optional path for output Excel file
+            
+        Returns:
+            DataFrame with results
+        """
+        results = []
+        total_matches = 0
+        high_score_matches = 0
+        
+        print(f"Processing {len(unmapped_lines)} unmapped lines against {len(mapped_lines)} mapped lines...")
+        print(f"Minimum threshold: {self.min_threshold}")
+        
+        for i, unmapped in enumerate(unmapped_lines):
+            if i % 100 == 0 and i > 0:
+                print(f"Processed {i}/{len(unmapped_lines)} unmapped lines...")
+            
+            matches = []
+            
+            for mapped in mapped_lines:
+                score = self.calculate_similarity(unmapped, mapped)
+                if score >= self.min_threshold:
+                    matches.append({
+                        'mapped_name': mapped,
+                        'score': score
+                    })
+                    total_matches += 1
+                    if score >= 80:
+                        high_score_matches += 1
+            
+            if matches:
+                # Sort matches by score (descending)
+                matches.sort(key=lambda x: x['score'], reverse=True)
+                
+                for match in matches:
+                    results.append({
+                        'unmapped_name': unmapped,
+                        'mapped_name': match['mapped_name'],
+                        'similarity_score': match['score'],
+                        'confidence_level': self._get_confidence_level(match['score'])
+                    })
+        
+        # Create results DataFrame
+        results_df = pd.DataFrame(results)
+        
+        # Print statistics
+        print(f"\n=== MATCHING RESULTS ===")
+        print(f"Unmapped lines with matches: {len(set([r['unmapped_name'] for r in results]))}")
+        print(f"Total unmapped lines: {len(unmapped_lines)}")
+        print(f"Total matches found: {total_matches}")
+        print(f"High confidence matches (≥80): {high_score_matches}")
+        
+        # Save to Excel if requested
+        if output_file and not results_df.empty:
+            self._save_results_to_excel(results_df, output_file, unmapped_lines, mapped_lines)
+        
+        return results_df
+    
+    def _get_confidence_level(self, score: int) -> str:
+        """Get confidence level based on score."""
+        if score >= 80:
+            return "High"
+        elif score >= 50:
+            return "Medium"
+        else:
+            return "Low"
+    
+    def _save_results_to_excel(self, results_df: pd.DataFrame, output_file: str, 
+                              unmapped_lines: List[str], mapped_lines: List[str]):
+        """Save results to Excel with multiple sheets."""
+        try:
+            with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
+                # Main results
+                results_df.to_excel(writer, sheet_name='Matches', index=False)
+                
+                # Summary statistics
+                summary_data = {
+                    'Metric': [
+                        'Total Unmapped Lines',
+                        'Total Mapped Lines', 
+                        'Unmapped Lines with Matches',
+                        'Total Matches Found',
+                        'High Confidence Matches (≥80)',
+                        'Medium Confidence Matches (50-79)',
+                        'Low Confidence Matches (<50)'
+                    ],
+                    'Count': [
+                        len(unmapped_lines),
+                        len(mapped_lines),
+                        len(results_df['unmapped_name'].unique()),
+                        len(results_df),
+                        len(results_df[results_df['similarity_score'] >= 80]),
+                        len(results_df[(results_df['similarity_score'] >= 50) & (results_df['similarity_score'] < 80)]),
+                        len(results_df[results_df['similarity_score'] < 50])
+                    ]
+                }
+                summary_df = pd.DataFrame(summary_data)
+                summary_df.to_excel(writer, sheet_name='Summary', index=False)
+                
+                # Top matches (score >= 80)
+                top_matches = results_df[results_df['similarity_score'] >= 80]
+                if not top_matches.empty:
+                    top_matches.to_excel(writer, sheet_name='High_Confidence', index=False)
+            
+            print(f"Results saved to: {output_file}")
+            
+        except Exception as e:
+            print(f"Error saving to Excel: {e}")
+    
+    def print_top_matches(self, results_df: pd.DataFrame, limit: int = 10):
+        """Print top matches to console."""
+        if results_df.empty:
+            print("No matches found.")
+            return
+        
+        print(f"\n=== TOP {limit} MATCHES ===")
+        top_matches = results_df.nlargest(limit, 'similarity_score')
+        
+        for _, row in top_matches.iterrows():
+            print(f"Score: {row['similarity_score']}% | {row['unmapped_name']} → {row['mapped_name']}")
+
+
+def main():
+    """
+    Main function - modify this section to use with your data.
+    """
+    
+    # Initialize matcher with minimum threshold
+    matcher = LineNameMatcher(min_threshold=30)
+    
+    # Option 1: Process Excel file directly
+    excel_file_path = "your_file.xlsx"  # Replace with your file path
+    output_file_path = "matching_results.xlsx"
+    
+    # Uncomment to process Excel file:
+    # results = matcher.find_matches_from_excel(excel_file_path, output_file_path)
+    
+    # Option 2: Manual input for testing
+    # Sample data based on your examples
+    unmapped_test = [
+        "48_E_SP 1674-1376",
+        "3_SP454-350-GS", 
+        "Line_Test_123",
+        "SAMPLE_A_456"
+    ]
+    
+    mapped_test = [
+        "48_E_SP 1674-1377",
+        "3_SP454-351-GS",
+        "Line_Test_124", 
+        "SAMPLE_B_456"
+    ]
+    
+    # Find matches with test data
+    print("Running with sample data...")
+    results = matcher.find_matches(unmapped_test, mapped_test, "sample_results.xlsx")
+    
+    # Display top matches
+    if not results.empty:
+        matcher.print_top_matches(results, limit=20)
+        print(f"\nFull results shape: {results.shape}")
+        print("\nSample results:")
+        print(results.head(10).to_string(index=False))
+    else:
+        print("No results to display.")
+
+
+if __name__ == "__main__":
+    main()
