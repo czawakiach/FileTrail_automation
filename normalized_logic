@@ -1086,7 +1086,15 @@ class FileTrailComparator:
                 stats_text += f"Total processing time: {final_stats['elapsed_time']:.2f} seconds\n"
                 stats_text += f"Peak memory usage: {final_stats['peak_memory']:.1f} MB\n"
                 stats_text += f"Records processed per second: {total_processed/final_stats['elapsed_time']:.1f}\n"
-                stats_text += f"Normalization cache size: {len(self.smart_normalize_string.cache_info().currsize)} entries\n"
+                
+                # Safe cache info retrieval
+                try:
+                    cache_info = self.smart_normalize_string.cache_info()
+                    cache_size = cache_info.currsize if hasattr(cache_info, 'currsize') else 0
+                    stats_text += f"Normalization cache size: {cache_size} entries\n"
+                except Exception:
+                    stats_text += f"Normalization cache size: N/A\n"
+                
                 stats_text += f"Match cache efficiency: {len(self.match_cache)} patterns cached\n"
             
             self.update_ui_safe(lambda: self.results_text.insert(tk.END, stats_text))
