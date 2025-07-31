@@ -1,0 +1,1110 @@
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+import pandas as pd
+import numpy as np
+from fuzzywuzzy import fuzz, process
+import re
+import os
+from datetime import datetime
+import threading
+import time
+import tracemalloc
+import psutil
+from collections import defaultdict
+from functools import lru_cache
+
+
+class PerformanceMonitor:
+    """Simple performance monitoring class"""
+    
+    def __init__(self):
+        self.start_time = None
+        self.start_memory = None
+        self.process = psutil.Process()
+        
+    def start_monitoring(self):
+        """Start performance monitoring"""
+        tracemalloc.start()
+        self.start_time = time.time()
+        self.start_memory = self.process.memory_info().rss / 1024 / 1024  # MB
+        
+    def get_current_stats(self):
+        """Get current performance statistics"""
+        if self.start_time is None:
+            return None
+            
+        elapsed_time = time.time() - self.start_time
+        current_memory = self.process.memory_info().rss / 1024 / 1024  # MB
+        memory_used = current_memory - self.start_memory
+        
+        # Get peak memory from tracemalloc
+        current, peak = tracemalloc.get_traced_memory()
+        peak_mb = peak / 1024 / 1024
+        
+        return {
+            'elapsed_time': elapsed_time,
+            'memory_used': memory_used,
+            'peak_memory': peak_mb,
+            'current_memory': current_memory
+        }
+    
+    def stop_monitoring(self):
+        """Stop monitoring and return final stats"""
+        stats = self.get_current_stats()
+        tracemalloc.stop()
+        return stats
+
+
+class FileTrailComparator:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("FileTrail Data Comparison Tool - Enhanced Normalization v3")
+        
+        # Make window responsive to screen size
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        window_width = min(1000, int(screen_width * 0.8))
+        window_height = min(800, int(screen_height * 0.85))
+        
+        # Center the window
+        x = (screen_width - window_width) // 2
+        y = (screen_height - window_height) // 2
+        
+        self.root.geometry(f"{window_width}x{window_height}+{x}+{y}")
+        self.root.minsize(800, 600)  # Set minimum size
+        
+        # File paths
+        self.file_paths = {
+            'filetrail': None,
+            'exploration_archives': None,
+            'open_works_1': None,
+            'open_works_2': None,
+            'open_works_3': None,
+            'lines_3d_ow': None,
+            'lines_3d_ea': None
+        }
+        
+        # Data storage and caching
+        self.data = {}
+        self.results = {}
+        self.processing_cancelled = False
+        self.performance_monitor = PerformanceMonitor()
+        
+        # Cache for normalized strings and matches
+        self.normalize_cache = {}
+        self.match_cache = {}
+        
+        self.create_widgets()
+        
+    def create_widgets(self):
+        # Main frame
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # Title
+        title_label = ttk.Label(main_frame, text="FileTrail Data Comparison Tool - Enhanced Normalization v3", 
+                               font=("Arial", 16, "bold"))
+        title_label.grid(row=0, column=0, columnspan=3, pady=(0, 20))
+        
+        # File selection section
+        file_frame = ttk.LabelFrame(main_frame, text="File Selection", padding="10")
+        file_frame.grid(row=1, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        
+        # FileTrail (required)
+        ttk.Label(file_frame, text="FileTrail Search Result (Required):").grid(row=0, column=0, sticky=tk.W, pady=2)
+        self.filetrail_var = tk.StringVar()
+        ttk.Entry(file_frame, textvariable=self.filetrail_var, width=50).grid(row=0, column=1, padx=5)
+        ttk.Button(file_frame, text="Browse", 
+                  command=lambda: self.browse_file('filetrail')).grid(row=0, column=2)
+        
+        # Exploration Archives (optional)
+        ttk.Label(file_frame, text="Exploration Archives (Optional):").grid(row=1, column=0, sticky=tk.W, pady=2)
+        self.exploration_var = tk.StringVar()
+        ttk.Entry(file_frame, textvariable=self.exploration_var, width=50).grid(row=1, column=1, padx=5)
+        ttk.Button(file_frame, text="Browse", 
+                  command=lambda: self.browse_file('exploration_archives')).grid(row=1, column=2)
+        
+        # Open Works files (up to 3)
+        ttk.Label(file_frame, text="Open Works 1 (Optional):").grid(row=2, column=0, sticky=tk.W, pady=2)
+        self.open_works_1_var = tk.StringVar()
+        ttk.Entry(file_frame, textvariable=self.open_works_1_var, width=50).grid(row=2, column=1, padx=5)
+        ttk.Button(file_frame, text="Browse", 
+                  command=lambda: self.browse_file('open_works_1')).grid(row=2, column=2)
+        
+        ttk.Label(file_frame, text="Open Works 2 (Optional):").grid(row=3, column=0, sticky=tk.W, pady=2)
+        self.open_works_2_var = tk.StringVar()
+        ttk.Entry(file_frame, textvariable=self.open_works_2_var, width=50).grid(row=3, column=1, padx=5)
+        ttk.Button(file_frame, text="Browse", 
+                  command=lambda: self.browse_file('open_works_2')).grid(row=3, column=2)
+        
+        ttk.Label(file_frame, text="Open Works 3 (Optional):").grid(row=4, column=0, sticky=tk.W, pady=2)
+        self.open_works_3_var = tk.StringVar()
+        ttk.Entry(file_frame, textvariable=self.open_works_3_var, width=50).grid(row=4, column=1, padx=5)
+        ttk.Button(file_frame, text="Browse", 
+                  command=lambda: self.browse_file('open_works_3')).grid(row=4, column=2)
+        
+        # 3D Lines files
+        ttk.Label(file_frame, text="3D Lines OW (OpenWorks) (Optional):").grid(row=5, column=0, sticky=tk.W, pady=2)
+        self.lines_3d_ow_var = tk.StringVar()
+        ttk.Entry(file_frame, textvariable=self.lines_3d_ow_var, width=50).grid(row=5, column=1, padx=5)
+        ttk.Button(file_frame, text="Browse", 
+                  command=lambda: self.browse_file('lines_3d_ow')).grid(row=5, column=2)
+        
+        ttk.Label(file_frame, text="3D Lines EA (Exploration Archives) (Optional):").grid(row=6, column=0, sticky=tk.W, pady=2)
+        self.lines_3d_ea_var = tk.StringVar()
+        ttk.Entry(file_frame, textvariable=self.lines_3d_ea_var, width=50).grid(row=6, column=1, padx=5)
+        ttk.Button(file_frame, text="Browse", 
+                  command=lambda: self.browse_file('lines_3d_ea')).grid(row=6, column=2)
+        
+        # Settings section
+        settings_frame = ttk.LabelFrame(main_frame, text="Matching Settings", padding="10")
+        settings_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        
+        # Substring length setting
+        ttk.Label(settings_frame, text="Min Substring Length:").grid(row=0, column=0, sticky=tk.W, padx=5)
+        self.substring_length_var = tk.IntVar(value=4)  # Reduced for normalized strings
+        substring_spinbox = ttk.Spinbox(settings_frame, from_=3, to=10, width=5, 
+                                       textvariable=self.substring_length_var)
+        substring_spinbox.grid(row=0, column=1, padx=5)
+        ttk.Label(settings_frame, text="characters").grid(row=0, column=2, sticky=tk.W, padx=5)
+        
+        # Fuzzy threshold setting
+        ttk.Label(settings_frame, text="Fuzzy Match Threshold:").grid(row=0, column=3, sticky=tk.W, padx=(20, 5))
+        self.fuzzy_threshold_var = tk.IntVar(value=75)
+        fuzzy_spinbox = ttk.Spinbox(settings_frame, from_=50, to=95, width=5, 
+                                   textvariable=self.fuzzy_threshold_var)
+        fuzzy_spinbox.grid(row=0, column=4, padx=5)
+        ttk.Label(settings_frame, text="% similarity").grid(row=0, column=5, sticky=tk.W, padx=5)
+        
+        # NEW: Normalization test section
+        norm_frame = ttk.LabelFrame(main_frame, text="Normalization Test", padding="10")
+        norm_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(10, 10))
+        
+        ttk.Label(norm_frame, text="Test String:").grid(row=0, column=0, sticky=tk.W, padx=5)
+        self.test_string_var = tk.StringVar()
+        test_entry = ttk.Entry(norm_frame, textvariable=self.test_string_var, width=30)
+        test_entry.grid(row=0, column=1, padx=5)
+        
+        test_button = ttk.Button(norm_frame, text="Test Normalization", 
+                               command=self.test_normalization)
+        test_button.grid(row=0, column=2, padx=5)
+        
+        self.norm_result_var = tk.StringVar()
+        norm_result_label = ttk.Label(norm_frame, textvariable=self.norm_result_var, 
+                                    foreground="blue")
+        norm_result_label.grid(row=0, column=3, padx=10, sticky=tk.W)
+        
+        # Processing section
+        process_frame = ttk.LabelFrame(main_frame, text="Processing", padding="10")
+        process_frame.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        
+        # Process and Cancel buttons
+        button_frame = ttk.Frame(process_frame)
+        button_frame.grid(row=0, column=0, pady=5)
+        
+        self.process_button = ttk.Button(button_frame, text="Process Data", 
+                                        command=self.process_data_threaded)
+        self.process_button.grid(row=0, column=0, padx=5)
+        
+        self.cancel_button = ttk.Button(button_frame, text="Cancel", 
+                                       command=self.cancel_processing, state=tk.DISABLED)
+        self.cancel_button.grid(row=0, column=1, padx=5)
+        
+        # Clear/Reset button
+        self.clear_button = ttk.Button(button_frame, text="Clear All", 
+                                      command=self.clear_all_data)
+        self.clear_button.grid(row=0, column=2, padx=5)
+        
+        # Export button
+        self.export_button = ttk.Button(button_frame, text="Export to Excel", 
+                                       command=self.export_to_excel, state=tk.DISABLED)
+        self.export_button.grid(row=0, column=3, padx=15)
+        
+        # Progress bar
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Progressbar(process_frame, variable=self.progress_var, 
+                                           maximum=100, length=300)
+        self.progress_bar.grid(row=0, column=1, padx=10, pady=5)
+        
+        # Status label
+        self.status_var = tk.StringVar(value="Ready")
+        self.status_label = ttk.Label(process_frame, textvariable=self.status_var)
+        self.status_label.grid(row=0, column=2, padx=10)
+        
+        # Performance info
+        self.perf_var = tk.StringVar(value="")
+        self.perf_label = ttk.Label(process_frame, textvariable=self.perf_var, font=("Arial", 8))
+        self.perf_label.grid(row=1, column=0, columnspan=3, pady=5)
+        
+        # Results section
+        results_frame = ttk.LabelFrame(main_frame, text="Results", padding="10")
+        results_frame.grid(row=4, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
+        
+        # Results text area
+        self.results_text = tk.Text(results_frame, height=12, width=80)
+        scrollbar = ttk.Scrollbar(results_frame, orient=tk.VERTICAL, command=self.results_text.yview)
+        self.results_text.configure(yscrollcommand=scrollbar.set)
+        self.results_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        
+        # Configure grid weights for responsive layout
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+        main_frame.columnconfigure(1, weight=1)
+        main_frame.rowconfigure(4, weight=1)
+        results_frame.columnconfigure(0, weight=1)
+        results_frame.rowconfigure(0, weight=1)
+        process_frame.columnconfigure(1, weight=1)
+        
+    def test_normalization(self):
+        """Test the normalization function with user input"""
+        test_string = self.test_string_var.get().strip()
+        if test_string:
+            normalized = self.smart_normalize_string(test_string)
+            self.norm_result_var.set(f"'{test_string}' → '{normalized}'")
+        else:
+            self.norm_result_var.set("Enter a string to test")
+    
+    @lru_cache(maxsize=10000)
+    def smart_normalize_string(self, text):
+        """
+        Enhanced normalization function that:
+        1. Tokenizes by separating letters and numbers using spaces, dashes, underscores
+        2. Removes leading zeros from numeric tokens
+        3. Converts letters to lowercase
+        4. Concatenates all tokens back together
+        
+        Examples:
+        - "91-0250" → "91250"
+        - "BA-0119-86V" → "ba11986v"
+        - "CST-80-08" → "cst808"
+        """
+        if pd.isna(text) or text is None:
+            return ""
+        
+        # Convert to string and strip whitespace
+        text = str(text).strip()
+        if not text:
+            return ""
+        
+        # Step 1: Split by common delimiters (spaces, dashes, underscores, dots, etc.)
+        # Use regex to split on multiple delimiters while preserving alphanumeric sequences
+        tokens = re.split(r'[-_\s\.]+', text)
+        
+        normalized_tokens = []
+        
+        for token in tokens:
+            if not token:  # Skip empty tokens
+                continue
+                
+            # Step 2: Further split mixed alphanumeric tokens
+            # Split sequences where letters and numbers meet
+            sub_tokens = re.findall(r'[A-Za-z]+|\d+', token)
+            
+            for sub_token in sub_tokens:
+                if sub_token.isdigit():
+                    # Step 3: Remove leading zeros from numeric tokens
+                    # Convert to int and back to string to remove leading zeros
+                    # Handle edge case where token is all zeros
+                    try:
+                        normalized_num = str(int(sub_token))
+                        normalized_tokens.append(normalized_num)
+                    except ValueError:
+                        # In case of conversion error, keep original
+                        normalized_tokens.append(sub_token)
+                elif sub_token.isalpha():
+                    # Step 4: Convert letters to lowercase
+                    normalized_tokens.append(sub_token.lower())
+                else:
+                    # Mixed or special characters - keep as lowercase
+                    normalized_tokens.append(sub_token.lower())
+        
+        # Step 5: Join all tokens together
+        result = ''.join(normalized_tokens)
+        
+        return result
+    
+    def create_smart_substrings(self, text, min_length):
+        """Create intelligent substrings for normalized strings"""
+        if not text or len(text) < min_length:
+            return []
+        
+        substrings = set()
+        
+        # Strategy 1: Create overlapping substrings
+        for i in range(len(text) - min_length + 1):
+            substring = text[i:i + min_length]
+            substrings.add(substring)
+        
+        # Strategy 2: If string is longer, also create some longer substrings
+        if len(text) > min_length + 2:
+            # Add some longer substrings for better matching
+            for length in range(min_length + 1, min(len(text) + 1, min_length + 4)):
+                for i in range(len(text) - length + 1):
+                    substring = text[i:i + length]
+                    substrings.add(substring)
+        
+        return list(substrings)
+    
+    def create_lookup_structures(self, data_dict):
+        """Create optimized lookup structures with smart normalization"""
+        min_substring_length = self.substring_length_var.get()
+        lookup_structures = {}
+        
+        for db_name, data_list in data_dict.items():
+            # Remove empty/null values and limit size for memory management
+            clean_data = []
+            seen = set()  # Remove duplicates
+            
+            for item in data_list:
+                if pd.notna(item) and str(item).strip():
+                    item_str = str(item)
+                    if item_str not in seen:
+                        clean_data.append(item_str)
+                        seen.add(item_str)
+                        
+                        # Limit to prevent memory issues
+                        if len(clean_data) > 50000:
+                            break
+            
+            if not clean_data:
+                lookup_structures[db_name] = {
+                    'exact_set': set(),
+                    'normalized_dict': {},
+                    'substring_dict': defaultdict(set),
+                    'fuzzy_list': []
+                }
+                continue
+            
+            # Create lookup structures with smart normalization
+            exact_set = set()
+            normalized_dict = {}
+            substring_dict = defaultdict(set)
+            
+            for item in clean_data:
+                normalized = self.smart_normalize_string(item)
+                if normalized:
+                    exact_set.add(normalized)
+                    normalized_dict[normalized] = item
+                    
+                    # Create smart substrings
+                    substrings = self.create_smart_substrings(normalized, min_substring_length)
+                    for substring in substrings:
+                        substring_dict[substring].add(item)
+            
+            lookup_structures[db_name] = {
+                'exact_set': exact_set,
+                'normalized_dict': normalized_dict,
+                'substring_dict': substring_dict,
+                'fuzzy_list': [self.smart_normalize_string(item) for item in clean_data[:1000]]
+            }
+        
+        return lookup_structures
+    
+    def find_matches_optimized(self, line_id, lookup_structures):
+        """Optimized matching with smart normalization and caching"""
+        if not line_id or pd.isna(line_id):
+            return {}
+        
+        # Check cache first
+        cache_key = str(line_id)
+        if cache_key in self.match_cache:
+            return self.match_cache[cache_key]
+        
+        fuzzy_threshold = self.fuzzy_threshold_var.get()
+        normalized_line_id = self.smart_normalize_string(line_id)
+        
+        if not normalized_line_id:
+            self.match_cache[cache_key] = {}
+            return {}
+        
+        matches = {}
+        
+        for db_name, structures in lookup_structures.items():
+            # 1. Exact match (fastest)
+            if normalized_line_id in structures['exact_set']:
+                matches[db_name] = {
+                    'value': structures['normalized_dict'][normalized_line_id],
+                    'match_type': 'exact',
+                    'score': 100
+                }
+                continue
+            
+            # 2. Substring match
+            best_substring_match = None
+            best_substring_score = 0
+            
+            # Check substrings of the line_id against our substring dictionary
+            min_length = self.substring_length_var.get()
+            substrings = self.create_smart_substrings(normalized_line_id, min_length)
+            
+            for substring in substrings:
+                if substring in structures['substring_dict']:
+                    for candidate in structures['substring_dict'][substring]:
+                        normalized_candidate = self.smart_normalize_string(candidate)
+                        
+                        # Calculate substring match score
+                        if (normalized_line_id in normalized_candidate or 
+                            normalized_candidate in normalized_line_id):
+                            # Score based on length similarity and overlap
+                            len_ratio = min(len(normalized_line_id), len(normalized_candidate)) / max(len(normalized_line_id), len(normalized_candidate))
+                            score = len_ratio * 85  # Slightly lower than exact match
+                            
+                            if score > best_substring_score:
+                                best_substring_score = score
+                                best_substring_match = candidate
+            
+            if best_substring_match:
+                matches[db_name] = {
+                    'value': best_substring_match,
+                    'match_type': 'substring',
+                    'score': int(best_substring_score)
+                }
+                continue
+            
+            # 3. Fuzzy match using normalized strings
+            if structures['fuzzy_list']:
+                result = process.extractOne(
+                    normalized_line_id, 
+                    structures['fuzzy_list'],
+                    scorer=fuzz.ratio,
+                    score_cutoff=fuzzy_threshold
+                )
+                
+                if result:
+                    matched_normalized, score = result
+                    # Find the original value
+                    for original_item in structures['normalized_dict'].keys():
+                        if original_item == matched_normalized:
+                            matches[db_name] = {
+                                'value': structures['normalized_dict'][original_item],
+                                'match_type': 'fuzzy',
+                                'score': score
+                            }
+                            break
+        
+        # Cache the result
+        self.match_cache[cache_key] = matches
+        return matches
+    
+    def browse_file(self, file_type):
+        """Browse for file selection with validation"""
+        file_path = filedialog.askopenfilename(
+            title=f"Select {file_type.replace('_', ' ').title()} File",
+            filetypes=[("Excel files", "*.xlsx *.xls"), ("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+        
+        if file_path:
+            # Validate file exists and is readable
+            if not os.path.exists(file_path):
+                messagebox.showerror("Error", f"File does not exist: {file_path}")
+                return
+                
+            # Quick validation - try to peek at the file
+            try:
+                if file_path.endswith('.csv'):
+                    pd.read_csv(file_path, nrows=0)
+                else:
+                    pd.read_excel(file_path, nrows=0)
+            except Exception as e:
+                messagebox.showerror("Error", f"Cannot read file {file_path}:\n{str(e)}")
+                return
+            
+            self.file_paths[file_type] = file_path
+            
+            # Update the corresponding StringVar
+            if file_type == 'filetrail':
+                self.filetrail_var.set(file_path)
+            elif file_type == 'exploration_archives':
+                self.exploration_var.set(file_path)
+            elif file_type == 'open_works_1':
+                self.open_works_1_var.set(file_path)
+            elif file_type == 'open_works_2':
+                self.open_works_2_var.set(file_path)
+            elif file_type == 'open_works_3':
+                self.open_works_3_var.set(file_path)
+            elif file_type == 'lines_3d_ow':
+                self.lines_3d_ow_var.set(file_path)
+            elif file_type == 'lines_3d_ea':
+                self.lines_3d_ea_var.set(file_path)
+    
+    def get_display_name(self, file_type):
+        """Get user-friendly display name for file types"""
+        if file_type == 'exploration_archives':
+            return 'Exploration Archives'
+        elif file_type.startswith('open_works'):
+            return file_type.replace('_', ' ').replace('works', 'Works').title()
+        elif file_type == 'lines_3d_ow':
+            return '3D Lines OW (OpenWorks)'
+        elif file_type == 'lines_3d_ea':
+            return '3D Lines EA (Exploration Archives)'
+        else:
+            return file_type.replace('_', ' ').title()
+    
+    def validate_input_files(self):
+        """Validate input files and their required columns"""
+        # Check if FileTrail file is provided
+        if not self.file_paths['filetrail']:
+            raise ValueError("FileTrail file is required!")
+        
+        # Validate FileTrail file columns
+        try:
+            if self.file_paths['filetrail'].endswith('.csv'):
+                df_sample = pd.read_csv(self.file_paths['filetrail'], nrows=0)
+            else:
+                df_sample = pd.read_excel(self.file_paths['filetrail'], nrows=0)
+            
+            required_columns = ['HOME_LOCATION', 'LINE_ID']
+            missing_columns = [col for col in required_columns if col not in df_sample.columns]
+            
+            if missing_columns:
+                raise ValueError(f"Required columns missing from FileTrail file: {missing_columns}")
+                
+        except Exception as e:
+            raise ValueError(f"Error validating FileTrail file: {str(e)}")
+        
+        # Validate comparison files
+        comparison_columns = {
+            'exploration_archives': 'EA Line Name',
+            'open_works_1': 'LINE',
+            'open_works_2': 'LINE',
+            'open_works_3': 'LINE',
+            'lines_3d_ow': 'SURVEY',
+            'lines_3d_ea': 'LINE_ID'
+        }
+        
+        validation_results = {}
+        
+        for file_type, expected_column in comparison_columns.items():
+            if self.file_paths[file_type]:
+                try:
+                    if self.file_paths[file_type].endswith('.csv'):
+                        df_sample = pd.read_csv(self.file_paths[file_type], nrows=0)
+                    else:
+                        df_sample = pd.read_excel(self.file_paths[file_type], nrows=0)
+                    
+                    if expected_column not in df_sample.columns:
+                        validation_results[file_type] = f"Column '{expected_column}' not found"
+                    else:
+                        validation_results[file_type] = "OK"
+                        
+                except Exception as e:
+                    validation_results[file_type] = f"Error: {str(e)}"
+            else:
+                validation_results[file_type] = "Not provided"
+        
+        return validation_results
+    
+    def load_data_efficiently(self, file_path, column_name=None, max_rows=None):
+        """Load data efficiently with memory management"""
+        if not file_path or not os.path.exists(file_path):
+            return None
+        
+        try:
+            if file_path.endswith('.csv'):
+                if column_name:
+                    df = pd.read_csv(file_path, usecols=[column_name], nrows=max_rows)
+                else:
+                    df = pd.read_csv(file_path, nrows=max_rows)
+            else:
+                if column_name:
+                    df = pd.read_excel(file_path, usecols=[column_name], nrows=max_rows)
+                else:
+                    df = pd.read_excel(file_path, nrows=max_rows)
+            
+            return df
+            
+        except Exception as e:
+            self.update_ui_safe(lambda: messagebox.showerror("Error", f"Failed to load file {file_path}: {str(e)}"))
+            return None
+    
+    def update_ui_safe(self, callback):
+        """Thread-safe UI updates"""
+        if self.root.winfo_exists():
+            self.root.after(0, callback)
+    
+    def update_performance_display(self):
+        """Update performance metrics display"""
+        stats = self.performance_monitor.get_current_stats()
+        if stats:
+            perf_text = f"Time: {stats['elapsed_time']:.1f}s | Memory: +{stats['memory_used']:.1f}MB | Peak: {stats['peak_memory']:.1f}MB"
+            self.update_ui_safe(lambda: self.perf_var.set(perf_text))
+    
+    def clear_all_data(self):
+        """Clear all loaded data, cache, and reset the interface for a fresh start"""
+        # Confirm with user before clearing
+        result = messagebox.askyesno(
+            "Clear All Data", 
+            "This will clear all loaded files, cached data, and results.\n\n"
+            "Are you sure you want to continue?"
+        )
+        
+        if not result:
+            return
+        
+        try:
+            # Clear file paths
+            self.file_paths = {
+                'filetrail': None,
+                'exploration_archives': None,
+                'open_works_1': None,
+                'open_works_2': None,
+                'open_works_3': None,
+                'lines_3d_ow': None,
+                'lines_3d_ea': None
+            }
+            
+            # Clear all StringVar variables (file path displays)
+            self.filetrail_var.set("")
+            self.exploration_var.set("")
+            self.open_works_1_var.set("")
+            self.open_works_2_var.set("")
+            self.open_works_3_var.set("")
+            self.lines_3d_ow_var.set("")
+            self.lines_3d_ea_var.set("")
+            
+            # Clear test normalization
+            self.test_string_var.set("")
+            self.norm_result_var.set("")
+            
+            # Clear data storage
+            self.data.clear()
+            self.results.clear()
+            
+            # Clear caches
+            self.normalize_cache.clear()
+            self.match_cache.clear()
+            
+            # Clear the cached normalize function
+            self.smart_normalize_string.cache_clear()
+            
+            # Reset processing state
+            self.processing_cancelled = False
+            
+            # Reset progress and status
+            self.progress_var.set(0)
+            self.status_var.set("Ready")
+            self.perf_var.set("")
+            
+            # Clear results text area
+            self.results_text.delete(1.0, tk.END)
+            self.results_text.insert(tk.END, "All data cleared. Ready for new analysis.\n\n")
+            self.results_text.insert(tk.END, "Enhanced normalization examples:\n")
+            self.results_text.insert(tk.END, "• '91-0250' → '91250'\n")
+            self.results_text.insert(tk.END, "• 'BA-0119-86V' → 'ba11986v'\n")
+            self.results_text.insert(tk.END, "• 'CST-80-08' → 'cst808'\n\n")
+            
+            # Reset button states
+            self.process_button.config(state=tk.NORMAL)
+            self.cancel_button.config(state=tk.DISABLED)
+            self.export_button.config(state=tk.DISABLED)
+            
+            # Reset performance monitor
+            self.performance_monitor = PerformanceMonitor()
+            
+            # Force garbage collection to free memory
+            import gc
+            gc.collect()
+            
+            # Show confirmation
+            self.status_var.set("All data cleared successfully")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to clear data: {str(e)}")
+            self.status_var.set("Error during cleanup")
+    
+    def cancel_processing(self):
+        """Cancel the current processing operation"""
+        self.processing_cancelled = True
+        self.update_ui_safe(lambda: self.status_var.set("Cancelling..."))
+    
+    def process_data_threaded(self):
+        """Run data processing in a separate thread with proper thread safety"""
+        self.processing_cancelled = False
+        self.match_cache.clear()  # Clear cache for fresh processing
+        
+        def update_buttons(process_enabled, cancel_enabled, export_enabled):
+            self.process_button.config(state=tk.NORMAL if process_enabled else tk.DISABLED)
+            self.cancel_button.config(state=tk.NORMAL if cancel_enabled else tk.DISABLED)
+            self.export_button.config(state=tk.NORMAL if export_enabled else tk.DISABLED)
+        
+        self.update_ui_safe(lambda: update_buttons(False, True, False))
+        
+        thread = threading.Thread(target=self.process_data)
+        thread.daemon = True
+        thread.start()
+    
+    def process_data(self):
+        """Main data processing function with enhanced normalization and performance monitoring"""
+        try:
+            # Start performance monitoring
+            self.performance_monitor.start_monitoring()
+            
+            # Clear previous results
+            self.update_ui_safe(lambda: self.results_text.delete(1.0, tk.END))
+            self.results = {}
+            
+            # Display normalization info
+            norm_info = "Using Enhanced Smart Normalization:\n"
+            norm_info += "• Tokenizes by separators (-, _, space, etc.)\n"
+            norm_info += "• Removes leading zeros from numbers\n"
+            norm_info += "• Converts letters to lowercase\n"
+            norm_info += "• Rejoins tokens for comparison\n\n"
+            self.update_ui_safe(lambda: self.results_text.insert(tk.END, norm_info))
+            
+            # Validate input files
+            self.update_ui_safe(lambda: self.status_var.set("Validating files..."))
+            self.update_ui_safe(lambda: self.progress_var.set(5))
+            
+            try:
+                validation_results = self.validate_input_files()
+            except ValueError as e:
+                self.update_ui_safe(lambda: messagebox.showerror("Validation Error", str(e)))
+                return
+            
+            if self.processing_cancelled:
+                return
+            
+            # Load FileTrail data
+            self.update_ui_safe(lambda: self.status_var.set("Loading FileTrail data..."))
+            self.update_ui_safe(lambda: self.progress_var.set(10))
+            
+            filetrail_data = self.load_data_efficiently(self.file_paths['filetrail'], max_rows=100000)
+            if filetrail_data is None:
+                return
+            
+            # Filter by HOME_LOCATION
+            self.update_ui_safe(lambda: self.status_var.set("Filtering FileTrail data..."))
+            self.update_ui_safe(lambda: self.progress_var.set(20))
+            
+            filtered_filetrail = filetrail_data[
+                filetrail_data['HOME_LOCATION'].str.contains('PT-US-HOU-WCK', na=False, case=False)
+            ].copy()
+            
+            total_filetrail = len(filetrail_data)
+            filtered_count = len(filtered_filetrail)
+            
+            result_text = f"FileTrail Processing Results:\n"
+            result_text += f"Total FileTrail records: {total_filetrail}\n"
+            result_text += f"Records with PT-US-HOU-WCK: {filtered_count}\n\n"
+            
+            # Show some normalization examples from actual data
+            if filtered_count > 0:
+                sample_lines = filtered_filetrail['LINE_ID'].dropna().head(5).tolist()
+                result_text += "Sample normalizations from your data:\n"
+                for line in sample_lines:
+                    normalized = self.smart_normalize_string(line)
+                    result_text += f"• '{line}' → '{normalized}'\n"
+                result_text += "\n"
+            
+            self.update_ui_safe(lambda: self.results_text.insert(tk.END, result_text))
+            
+            if self.processing_cancelled:
+                return
+            
+            # Load comparison files efficiently
+            self.update_ui_safe(lambda: self.status_var.set("Loading comparison files..."))
+            self.update_ui_safe(lambda: self.progress_var.set(30))
+            
+            comparison_data = {}
+            comparison_columns = {
+                'exploration_archives': 'EA Line Name',
+                'open_works_1': 'LINE',
+                'open_works_2': 'LINE',
+                'open_works_3': 'LINE',
+                'lines_3d_ow': 'SURVEY',
+                'lines_3d_ea': 'LINE_ID'
+            }
+            
+            for file_type, column_name in comparison_columns.items():
+                if self.file_paths[file_type] and validation_results.get(file_type) == "OK":
+                    data = self.load_data_efficiently(self.file_paths[file_type], column_name, max_rows=50000)
+                    if data is not None and column_name in data.columns:
+                        comparison_data[file_type] = data[column_name].dropna().tolist()
+                        display_name = self.get_display_name(file_type)
+                        result_text = f"{display_name}: {len(comparison_data[file_type])} records\n"
+                    else:
+                        display_name = self.get_display_name(file_type)
+                        result_text = f"{display_name}: Column '{column_name}' not found or file error\n"
+                else:
+                    display_name = self.get_display_name(file_type)
+                    result_text = f"{display_name}: {validation_results.get(file_type, 'Not provided')}\n"
+                
+                self.update_ui_safe(lambda text=result_text: self.results_text.insert(tk.END, text))
+                
+                if self.processing_cancelled:
+                    return
+            
+            self.update_ui_safe(lambda: self.results_text.insert(tk.END, "\n"))
+            
+            # Create optimized lookup structures with smart normalization
+            self.update_ui_safe(lambda: self.status_var.set("Creating normalized lookup structures..."))
+            self.update_ui_safe(lambda: self.progress_var.set(40))
+            self.update_performance_display()
+            
+            lookup_structures = self.create_lookup_structures(comparison_data)
+            
+            if self.processing_cancelled:
+                return
+            
+            # Process matches with enhanced normalization
+            self.update_ui_safe(lambda: self.status_var.set("Processing matches with smart normalization..."))
+            self.update_ui_safe(lambda: self.progress_var.set(50))
+            
+            # Initialize result columns
+            match_columns = {
+                'EA_Match': '', 'EA_Match_Type': '', 'EA_Score': 0,
+                'OW1_Match': '', 'OW1_Match_Type': '', 'OW1_Score': 0,
+                'OW2_Match': '', 'OW2_Match_Type': '', 'OW2_Score': 0,
+                'OW3_Match': '', 'OW3_Match_Type': '', 'OW3_Score': 0,
+                '3D_OW_Match': '', '3D_OW_Match_Type': '', '3D_OW_Score': 0,
+                '3D_EA_Match': '', '3D_EA_Match_Type': '', '3D_EA_Score': 0,
+                'Has_Any_Match': False,
+                'Normalized_LINE_ID': ''  # New column to show normalized version
+            }
+            
+            for col, default_val in match_columns.items():
+                filtered_filetrail[col] = default_val
+            
+            # Track statistics and accuracy metrics
+            stats = {
+                'exploration_archives': {'exact': 0, 'substring': 0, 'fuzzy': 0, 'total': 0},
+                'open_works_1': {'exact': 0, 'substring': 0, 'fuzzy': 0, 'total': 0},
+                'open_works_2': {'exact': 0, 'substring': 0, 'fuzzy': 0, 'total': 0},
+                'open_works_3': {'exact': 0, 'substring': 0, 'fuzzy': 0, 'total': 0},
+                'lines_3d_ow': {'exact': 0, 'substring': 0, 'fuzzy': 0, 'total': 0},
+                'lines_3d_ea': {'exact': 0, 'substring': 0, 'fuzzy': 0, 'total': 0}
+            }
+            
+            match_details = []
+            total_processed = 0
+            total_with_matches = 0
+            
+            # Process in smaller batches with cancellation checks
+            batch_size = 50
+            total_rows = len(filtered_filetrail)
+            
+            for batch_start in range(0, total_rows, batch_size):
+                if self.processing_cancelled:
+                    self.update_ui_safe(lambda: self.status_var.set("Processing cancelled"))
+                    return
+                
+                batch_end = min(batch_start + batch_size, total_rows)
+                batch_progress = 50 + (batch_start / total_rows) * 40
+                self.update_ui_safe(lambda prog=batch_progress: self.progress_var.set(prog))
+                self.update_performance_display()
+                
+                # Process batch
+                for idx in range(batch_start, batch_end):
+                    row_idx = filtered_filetrail.index[idx]
+                    line_id = filtered_filetrail.loc[row_idx, 'LINE_ID']
+                    
+                    if pd.isna(line_id):
+                        continue
+                    
+                    total_processed += 1
+                    
+                    # Store normalized version
+                    normalized_line_id = self.smart_normalize_string(line_id)
+                    filtered_filetrail.loc[row_idx, 'Normalized_LINE_ID'] = normalized_line_id
+                    
+                    # Find matches using enhanced normalization
+                    matches = self.find_matches_optimized(line_id, lookup_structures)
+                    
+                    has_match = bool(matches)
+                    if has_match:
+                        total_with_matches += 1
+                        
+                    filtered_filetrail.loc[row_idx, 'Has_Any_Match'] = has_match
+                    
+                    # Store match results with mapping
+                    file_type_mapping = {
+                        'exploration_archives': ('EA_Match', 'EA_Match_Type', 'EA_Score'),
+                        'open_works_1': ('OW1_Match', 'OW1_Match_Type', 'OW1_Score'),
+                        'open_works_2': ('OW2_Match', 'OW2_Match_Type', 'OW2_Score'),
+                        'open_works_3': ('OW3_Match', 'OW3_Match_Type', 'OW3_Score'),
+                        'lines_3d_ow': ('3D_OW_Match', '3D_OW_Match_Type', '3D_OW_Score'),
+                        'lines_3d_ea': ('3D_EA_Match', '3D_EA_Match_Type', '3D_EA_Score')
+                    }
+                    
+                    for file_type, match_info in matches.items():
+                        if file_type in stats:
+                            stats[file_type][match_info['match_type']] += 1
+                            stats[file_type]['total'] += 1
+                        
+                        # Store in appropriate columns
+                        if file_type in file_type_mapping:
+                            match_col, type_col, score_col = file_type_mapping[file_type]
+                            filtered_filetrail.loc[row_idx, match_col] = match_info['value']
+                            filtered_filetrail.loc[row_idx, type_col] = match_info['match_type']
+                            filtered_filetrail.loc[row_idx, score_col] = match_info['score']
+                        
+                        # Store detailed match info
+                        display_name = self.get_display_name(file_type)
+                        match_details.append({
+                            'FileTrail_LINE_ID': line_id,
+                            'Normalized_LINE_ID': normalized_line_id,
+                            'Database': display_name,
+                            'Matched_Value': match_info['value'],
+                            'Normalized_Match': self.smart_normalize_string(match_info['value']),
+                            'Match_Type': match_info['match_type'],
+                            'Score': match_info['score']
+                        })
+            
+            if self.processing_cancelled:
+                self.update_ui_safe(lambda: self.status_var.set("Processing cancelled"))
+                return
+            
+            # Store results
+            self.results['filtered_filetrail'] = filtered_filetrail
+            self.results['match_details'] = pd.DataFrame(match_details)
+            self.results['unique_records'] = filtered_filetrail[~filtered_filetrail['Has_Any_Match']].copy()
+            
+            # Calculate match accuracy metrics
+            match_rate = (total_with_matches / total_processed * 100) if total_processed > 0 else 0
+            
+            # Display comprehensive statistics
+            min_substring_length = self.substring_length_var.get()
+            fuzzy_threshold = self.fuzzy_threshold_var.get()
+            
+            stats_text = f"\nEnhanced Match Statistics (Smart Normalization):\n"
+            stats_text += f"Min substring length: {min_substring_length} chars, Fuzzy threshold: {fuzzy_threshold}%\n"
+            stats_text += f"Total records processed: {total_processed}\n"
+            stats_text += f"Records with matches: {total_with_matches} ({match_rate:.1f}%)\n\n"
+            
+            for file_type, stat in stats.items():
+                if stat['total'] > 0:
+                    display_name = self.get_display_name(file_type)
+                    stats_text += f"{display_name}: {stat['total']} matches\n"
+                    stats_text += f"  - Exact: {stat['exact']} ({stat['exact']/stat['total']*100:.1f}%)\n"
+                    stats_text += f"  - Substring: {stat['substring']} ({stat['substring']/stat['total']*100:.1f}%)\n"
+                    stats_text += f"  - Fuzzy: {stat['fuzzy']} ({stat['fuzzy']/stat['total']*100:.1f}%)\n"
+            
+            unique_count = len(self.results['unique_records'])
+            stats_text += f"\nUnique FileTrail records (no matches): {unique_count}\n"
+            
+            # Performance summary
+            final_stats = self.performance_monitor.stop_monitoring()
+            if final_stats:
+                stats_text += f"\nPerformance Summary:\n"
+                stats_text += f"Total processing time: {final_stats['elapsed_time']:.2f} seconds\n"
+                stats_text += f"Peak memory usage: {final_stats['peak_memory']:.1f} MB\n"
+                stats_text += f"Records processed per second: {total_processed/final_stats['elapsed_time']:.1f}\n"
+                stats_text += f"Normalization cache size: {len(self.smart_normalize_string.cache_info().currsize)} entries\n"
+                stats_text += f"Match cache efficiency: {len(self.match_cache)} patterns cached\n"
+            
+            self.update_ui_safe(lambda: self.results_text.insert(tk.END, stats_text))
+            
+            # Complete
+            self.update_ui_safe(lambda: self.status_var.set("Enhanced processing complete!"))
+            self.update_ui_safe(lambda: self.progress_var.set(100))
+            self.update_ui_safe(lambda: self.export_button.config(state=tk.NORMAL))
+            
+        except Exception as e:
+            import traceback
+            error_msg = f"Processing failed: {str(e)}\n\nDetails:\n{traceback.format_exc()}"
+            self.update_ui_safe(lambda: messagebox.showerror("Error", error_msg))
+            self.update_ui_safe(lambda: self.status_var.set("Error occurred"))
+        
+        finally:
+            # Reset buttons
+            self.update_ui_safe(lambda: self.process_button.config(state=tk.NORMAL))
+            self.update_ui_safe(lambda: self.cancel_button.config(state=tk.DISABLED))
+    
+    def export_to_excel(self):
+        """Export results to Excel file with enhanced normalization data"""
+        if not self.results:
+            messagebox.showwarning("Warning", "No results to export!")
+            return
+        
+        # Get output file path
+        output_path = filedialog.asksaveasfilename(
+            title="Save Results",
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")]
+        )
+        
+        if not output_path:
+            return
+        
+        try:
+            # Create a progress dialog for export
+            self.status_var.set("Exporting to Excel...")
+            self.progress_var.set(0)
+            
+            with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+                # Sheet 1: Unique FileTrail records
+                self.progress_var.set(20)
+                self.results['unique_records'].to_excel(
+                    writer, sheet_name='Unique_FileTrail_Records', index=False
+                )
+                
+                # Sheet 2: All FileTrail records with match info
+                self.progress_var.set(40)
+                self.results['filtered_filetrail'].to_excel(
+                    writer, sheet_name='All_FileTrail_Records', index=False
+                )
+                
+                # Sheet 3: Enhanced match details with normalization info
+                self.progress_var.set(60)
+                if not self.results['match_details'].empty:
+                    self.results['match_details'].to_excel(
+                        writer, sheet_name='Match_Details', index=False
+                    )
+                
+                # Sheet 4: Summary statistics with normalization info
+                self.progress_var.set(80)
+                summary_data = []
+                if hasattr(self, 'results') and self.results:
+                    total_records = len(self.results['filtered_filetrail'])
+                    unique_records = len(self.results['unique_records'])
+                    matched_records = total_records - unique_records
+                    
+                    summary_data = [
+                        ['Metric', 'Value'],
+                        ['Total FileTrail Records Processed', total_records],
+                        ['Records with Matches', matched_records],
+                        ['Unique Records (No Matches)', unique_records],
+                        ['Match Rate (%)', f"{(matched_records/total_records*100):.1f}" if total_records > 0 else "0"],
+                        ['Processing Date', datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
+                        ['Normalization Method', 'Smart Enhanced Normalization'],
+                        ['Substring Min Length', self.substring_length_var.get()],
+                        ['Fuzzy Threshold (%)', self.fuzzy_threshold_var.get()],
+                        ['', ''],
+                        ['Normalization Examples', ''],
+                        ["'91-0250'", "'91250'"],
+                        ["'BA-0119-86V'", "'ba11986v'"],
+                        ["'CST-80-08'", "'cst808'"]
+                    ]
+                
+                if summary_data:
+                    summary_df = pd.DataFrame(summary_data[1:], columns=summary_data[0])
+                    summary_df.to_excel(writer, sheet_name='Processing_Summary', index=False)
+            
+            self.progress_var.set(100)
+            self.status_var.set("Export completed!")
+            messagebox.showinfo("Success", f"Results exported to {output_path}")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Export failed: {str(e)}")
+        finally:
+            self.progress_var.set(0)
+            self.status_var.set("Ready")
+
+
+def main():
+    root = tk.Tk()
+    app = FileTrailComparator(root)
+    
+    # Handle window closing gracefully
+    def on_closing():
+        if hasattr(app, 'processing_cancelled'):
+            app.processing_cancelled = True
+        root.destroy()
+    
+    root.protocol("WM_DELETE_WINDOW", on_closing)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
