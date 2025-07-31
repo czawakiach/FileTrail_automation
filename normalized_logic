@@ -269,27 +269,41 @@ class FileTrailComparator:
     def smart_normalize_string(self, text):
         """
         Enhanced normalization function that:
-        1. Tokenizes by separating letters and numbers using spaces, dashes, underscores
-        2. Removes leading zeros from numeric tokens
-        3. Converts letters to lowercase
-        4. Concatenates all tokens back together
+        1. Handles various data types (strings, numbers, None, NaN)
+        2. Tokenizes by separating letters and numbers using spaces, dashes, underscores
+        3. Removes leading zeros from numeric tokens
+        4. Converts letters to lowercase
+        5. Concatenates all tokens back together
         
         Examples:
         - "91-0250" → "91250"
         - "BA-0119-86V" → "ba11986v"
         - "CST-80-08" → "cst808"
+        - 12345 → "12345"
+        - "" → ""
+        - None → ""
         """
-        if pd.isna(text) or text is None:
+        # Handle None, NaN, and empty values
+        if text is None or pd.isna(text):
             return ""
         
-        # Convert to string and strip whitespace
-        text = str(text).strip()
-        if not text:
+        # Convert to string first (handles integers, floats, etc.)
+        try:
+            text_str = str(text).strip()
+        except Exception:
+            return ""
+        
+        # Handle empty strings after conversion
+        if not text_str or text_str.lower() in ['nan', 'none', 'null']:
             return ""
         
         # Step 1: Split by common delimiters (spaces, dashes, underscores, dots, etc.)
         # Use regex to split on multiple delimiters while preserving alphanumeric sequences
-        tokens = re.split(r'[-_\s\.]+', text)
+        try:
+            tokens = re.split(r'[-_\s\.]+', text_str)
+        except Exception:
+            # If regex fails for some reason, treat as single token
+            tokens = [text_str]
         
         normalized_tokens = []
         
@@ -299,55 +313,87 @@ class FileTrailComparator:
                 
             # Step 2: Further split mixed alphanumeric tokens
             # Split sequences where letters and numbers meet
-            sub_tokens = re.findall(r'[A-Za-z]+|\d+', token)
+            try:
+                sub_tokens = re.findall(r'[A-Za-z]+|\d+', token)
+            except Exception:
+                # If regex fails, treat whole token as alphanumeric
+                sub_tokens = [token] if token else []
+            
+            # If no alphanumeric found, but token exists, include it
+            if not sub_tokens and token:
+                sub_tokens = [token]
             
             for sub_token in sub_tokens:
+                if not sub_token:  # Skip empty sub-tokens
+                    continue
+                    
                 if sub_token.isdigit():
                     # Step 3: Remove leading zeros from numeric tokens
                     # Convert to int and back to string to remove leading zeros
                     # Handle edge case where token is all zeros
                     try:
-                        normalized_num = str(int(sub_token))
+                        # Handle case where sub_token might be very long number
+                        if len(sub_token) > 15:  # Avoid overflow for very long numbers
+                            # Remove leading zeros manually for very long numbers
+                            normalized_num = sub_token.lstrip('0') or '0'
+                        else:
+                            normalized_num = str(int(sub_token))
                         normalized_tokens.append(normalized_num)
-                    except ValueError:
-                        # In case of conversion error, keep original
-                        normalized_tokens.append(sub_token)
+                    except (ValueError, OverflowError):
+                        # In case of conversion error, manually remove leading zeros
+                        normalized_num = sub_token.lstrip('0') or '0'
+                        normalized_tokens.append(normalized_num)
                 elif sub_token.isalpha():
                     # Step 4: Convert letters to lowercase
                     normalized_tokens.append(sub_token.lower())
                 else:
-                    # Mixed or special characters - keep as lowercase
-                    normalized_tokens.append(sub_token.lower())
+                    # Mixed or special characters - keep as lowercase if possible
+                    try:
+                        normalized_tokens.append(sub_token.lower())
+                    except Exception:
+                        # If lower() fails, keep original
+                        normalized_tokens.append(sub_token)
         
         # Step 5: Join all tokens together
-        result = ''.join(normalized_tokens)
+        try:
+            result = ''.join(normalized_tokens)
+        except Exception:
+            # If join fails, return empty string
+            result = ""
         
         return result
     
     def create_smart_substrings(self, text, min_length):
-        """Create intelligent substrings for normalized strings"""
-        if not text or len(text) < min_length:
+        """Create intelligent substrings for normalized strings with robust error handling"""
+        if not text or not isinstance(text, str) or len(text) < min_length:
             return []
         
-        substrings = set()
-        
-        # Strategy 1: Create overlapping substrings
-        for i in range(len(text) - min_length + 1):
-            substring = text[i:i + min_length]
-            substrings.add(substring)
-        
-        # Strategy 2: If string is longer, also create some longer substrings
-        if len(text) > min_length + 2:
-            # Add some longer substrings for better matching
-            for length in range(min_length + 1, min(len(text) + 1, min_length + 4)):
-                for i in range(len(text) - length + 1):
-                    substring = text[i:i + length]
+        try:
+            substrings = set()
+            
+            # Strategy 1: Create overlapping substrings
+            for i in range(len(text) - min_length + 1):
+                substring = text[i:i + min_length]
+                if len(substring) >= min_length:
                     substrings.add(substring)
-        
-        return list(substrings)
+            
+            # Strategy 2: If string is longer, also create some longer substrings
+            if len(text) > min_length + 2:
+                # Add some longer substrings for better matching
+                for length in range(min_length + 1, min(len(text) + 1, min_length + 4)):
+                    for i in range(len(text) - length + 1):
+                        substring = text[i:i + length]
+                        if len(substring) >= min_length:
+                            substrings.add(substring)
+            
+            return list(substrings)
+            
+        except Exception as e:
+            # If anything goes wrong, return empty list
+            return []
     
     def create_lookup_structures(self, data_dict):
-        """Create optimized lookup structures with smart normalization"""
+        """Create optimized lookup structures with smart normalization and robust error handling"""
         min_substring_length = self.substring_length_var.get()
         lookup_structures = {}
         
@@ -357,8 +403,16 @@ class FileTrailComparator:
             seen = set()  # Remove duplicates
             
             for item in data_list:
-                if pd.notna(item) and str(item).strip():
-                    item_str = str(item)
+                try:
+                    # Handle various data types more robustly
+                    if item is None or pd.isna(item):
+                        continue
+                    
+                    # Convert to string and check if meaningful
+                    item_str = str(item).strip()
+                    if not item_str or item_str.lower() in ['nan', 'none', 'null', '']:
+                        continue
+                    
                     if item_str not in seen:
                         clean_data.append(item_str)
                         seen.add(item_str)
@@ -366,6 +420,10 @@ class FileTrailComparator:
                         # Limit to prevent memory issues
                         if len(clean_data) > 50000:
                             break
+                            
+                except Exception as e:
+                    # Skip problematic items and continue
+                    continue
             
             if not clean_data:
                 lookup_structures[db_name] = {
@@ -382,27 +440,46 @@ class FileTrailComparator:
             substring_dict = defaultdict(set)
             
             for item in clean_data:
-                normalized = self.smart_normalize_string(item)
-                if normalized:
-                    exact_set.add(normalized)
-                    normalized_dict[normalized] = item
-                    
-                    # Create smart substrings
-                    substrings = self.create_smart_substrings(normalized, min_substring_length)
-                    for substring in substrings:
-                        substring_dict[substring].add(item)
+                try:
+                    normalized = self.smart_normalize_string(item)
+                    if normalized and len(normalized) > 0:  # Ensure normalized result is meaningful
+                        exact_set.add(normalized)
+                        normalized_dict[normalized] = item
+                        
+                        # Create smart substrings
+                        substrings = self.create_smart_substrings(normalized, min_substring_length)
+                        for substring in substrings:
+                            if substring and len(substring) >= min_substring_length:
+                                substring_dict[substring].add(item)
+                                
+                except Exception as e:
+                    # Skip problematic items and continue processing
+                    continue
+            
+            # Create fuzzy list with error handling
+            fuzzy_list = []
+            try:
+                for item in clean_data[:1000]:  # Limit fuzzy matching to prevent slowdown
+                    try:
+                        normalized_item = self.smart_normalize_string(item)
+                        if normalized_item and len(normalized_item) > 0:
+                            fuzzy_list.append(normalized_item)
+                    except Exception:
+                        continue
+            except Exception:
+                fuzzy_list = []
             
             lookup_structures[db_name] = {
                 'exact_set': exact_set,
                 'normalized_dict': normalized_dict,
                 'substring_dict': substring_dict,
-                'fuzzy_list': [self.smart_normalize_string(item) for item in clean_data[:1000]]
+                'fuzzy_list': fuzzy_list
             }
         
         return lookup_structures
     
     def find_matches_optimized(self, line_id, lookup_structures):
-        """Optimized matching with smart normalization and caching"""
+        """Optimized matching with smart normalization and robust error handling"""
         if not line_id or pd.isna(line_id):
             return {}
         
@@ -411,81 +488,100 @@ class FileTrailComparator:
         if cache_key in self.match_cache:
             return self.match_cache[cache_key]
         
-        fuzzy_threshold = self.fuzzy_threshold_var.get()
-        normalized_line_id = self.smart_normalize_string(line_id)
-        
-        if not normalized_line_id:
+        try:
+            fuzzy_threshold = self.fuzzy_threshold_var.get()
+            normalized_line_id = self.smart_normalize_string(line_id)
+            
+            if not normalized_line_id or len(normalized_line_id) == 0:
+                self.match_cache[cache_key] = {}
+                return {}
+            
+            matches = {}
+            
+            for db_name, structures in lookup_structures.items():
+                try:
+                    # 1. Exact match (fastest)
+                    if normalized_line_id in structures['exact_set']:
+                        matches[db_name] = {
+                            'value': structures['normalized_dict'][normalized_line_id],
+                            'match_type': 'exact',
+                            'score': 100
+                        }
+                        continue
+                    
+                    # 2. Substring match
+                    best_substring_match = None
+                    best_substring_score = 0
+                    
+                    # Check substrings of the line_id against our substring dictionary
+                    min_length = self.substring_length_var.get()
+                    substrings = self.create_smart_substrings(normalized_line_id, min_length)
+                    
+                    for substring in substrings:
+                        if substring and substring in structures['substring_dict']:
+                            for candidate in structures['substring_dict'][substring]:
+                                try:
+                                    normalized_candidate = self.smart_normalize_string(candidate)
+                                    
+                                    # Calculate substring match score
+                                    if (normalized_line_id in normalized_candidate or 
+                                        normalized_candidate in normalized_line_id):
+                                        # Score based on length similarity and overlap
+                                        if len(normalized_line_id) > 0 and len(normalized_candidate) > 0:
+                                            len_ratio = min(len(normalized_line_id), len(normalized_candidate)) / max(len(normalized_line_id), len(normalized_candidate))
+                                            score = len_ratio * 85  # Slightly lower than exact match
+                                            
+                                            if score > best_substring_score:
+                                                best_substring_score = score
+                                                best_substring_match = candidate
+                                except Exception:
+                                    continue
+                    
+                    if best_substring_match:
+                        matches[db_name] = {
+                            'value': best_substring_match,
+                            'match_type': 'substring',
+                            'score': int(best_substring_score)
+                        }
+                        continue
+                    
+                    # 3. Fuzzy match using normalized strings
+                    if structures['fuzzy_list'] and len(structures['fuzzy_list']) > 0:
+                        try:
+                            result = process.extractOne(
+                                normalized_line_id, 
+                                structures['fuzzy_list'],
+                                scorer=fuzz.ratio,
+                                score_cutoff=fuzzy_threshold
+                            )
+                            
+                            if result:
+                                matched_normalized, score = result
+                                # Find the original value
+                                for original_item in structures['normalized_dict'].keys():
+                                    if original_item == matched_normalized:
+                                        matches[db_name] = {
+                                            'value': structures['normalized_dict'][original_item],
+                                            'match_type': 'fuzzy',
+                                            'score': score
+                                        }
+                                        break
+                        except Exception:
+                            # Skip fuzzy matching if it fails
+                            continue
+                            
+                except Exception:
+                    # Skip this database if there's an error
+                    continue
+            
+            # Cache the result
+            self.match_cache[cache_key] = matches
+            return matches
+            
+        except Exception:
+            # If everything fails, return empty matches
             self.match_cache[cache_key] = {}
             return {}
-        
-        matches = {}
-        
-        for db_name, structures in lookup_structures.items():
-            # 1. Exact match (fastest)
-            if normalized_line_id in structures['exact_set']:
-                matches[db_name] = {
-                    'value': structures['normalized_dict'][normalized_line_id],
-                    'match_type': 'exact',
-                    'score': 100
-                }
-                continue
-            
-            # 2. Substring match
-            best_substring_match = None
-            best_substring_score = 0
-            
-            # Check substrings of the line_id against our substring dictionary
-            min_length = self.substring_length_var.get()
-            substrings = self.create_smart_substrings(normalized_line_id, min_length)
-            
-            for substring in substrings:
-                if substring in structures['substring_dict']:
-                    for candidate in structures['substring_dict'][substring]:
-                        normalized_candidate = self.smart_normalize_string(candidate)
-                        
-                        # Calculate substring match score
-                        if (normalized_line_id in normalized_candidate or 
-                            normalized_candidate in normalized_line_id):
-                            # Score based on length similarity and overlap
-                            len_ratio = min(len(normalized_line_id), len(normalized_candidate)) / max(len(normalized_line_id), len(normalized_candidate))
-                            score = len_ratio * 85  # Slightly lower than exact match
-                            
-                            if score > best_substring_score:
-                                best_substring_score = score
-                                best_substring_match = candidate
-            
-            if best_substring_match:
-                matches[db_name] = {
-                    'value': best_substring_match,
-                    'match_type': 'substring',
-                    'score': int(best_substring_score)
-                }
-                continue
-            
-            # 3. Fuzzy match using normalized strings
-            if structures['fuzzy_list']:
-                result = process.extractOne(
-                    normalized_line_id, 
-                    structures['fuzzy_list'],
-                    scorer=fuzz.ratio,
-                    score_cutoff=fuzzy_threshold
-                )
-                
-                if result:
-                    matched_normalized, score = result
-                    # Find the original value
-                    for original_item in structures['normalized_dict'].keys():
-                        if original_item == matched_normalized:
-                            matches[db_name] = {
-                                'value': structures['normalized_dict'][original_item],
-                                'match_type': 'fuzzy',
-                                'score': score
-                            }
-                            break
-        
-        # Cache the result
-        self.match_cache[cache_key] = matches
-        return matches
     
     def browse_file(self, file_type):
         """Browse for file selection with validation"""
