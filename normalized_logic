@@ -178,7 +178,7 @@ class FileTrailComparator:
         
         # NEW: Normalization test section
         norm_frame = ttk.LabelFrame(main_frame, text="Normalization Test", padding="10")
-        norm_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(10, 10))
+        norm_frame.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
         
         ttk.Label(norm_frame, text="Test String:").grid(row=0, column=0, sticky=tk.W, padx=5)
         self.test_string_var = tk.StringVar()
@@ -196,7 +196,7 @@ class FileTrailComparator:
         
         # Processing section
         process_frame = ttk.LabelFrame(main_frame, text="Processing", padding="10")
-        process_frame.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        process_frame.grid(row=4, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
         
         # Process and Cancel buttons
         button_frame = ttk.Frame(process_frame)
@@ -238,7 +238,7 @@ class FileTrailComparator:
         
         # Results section
         results_frame = ttk.LabelFrame(main_frame, text="Results", padding="10")
-        results_frame.grid(row=4, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
+        results_frame.grid(row=5, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
         
         # Results text area
         self.results_text = tk.Text(results_frame, height=12, width=80)
@@ -251,7 +251,7 @@ class FileTrailComparator:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         main_frame.columnconfigure(1, weight=1)
-        main_frame.rowconfigure(4, weight=1)
+        main_frame.rowconfigure(5, weight=1)  # Updated row number
         results_frame.columnconfigure(0, weight=1)
         results_frame.rowconfigure(0, weight=1)
         process_frame.columnconfigure(1, weight=1)
