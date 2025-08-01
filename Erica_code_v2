@@ -1,0 +1,304 @@
+import pandas as pd
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+from fuzzywuzzy import fuzz
+import os
+from datetime import datetime
+import threading
+
+class ExcelFuzzyMatcher:
+    def __init__(self):
+        self.root = tk.Tk()
+        self.root.title("Excel Fuzzy Line Name Matcher")
+        self.root.geometry("600x400")
+        
+        # Variables
+        self.file_path = tk.StringVar()
+        self.progress = tk.DoubleVar()
+        self.status_text = tk.StringVar(value="Ready to process Excel file...")
+        
+        self.setup_gui()
+        
+    def setup_gui(self):
+        # Main frame
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # Title
+        title_label = ttk.Label(main_frame, text="Excel Fuzzy Line Name Matcher", 
+                               font=("Arial", 16, "bold"))
+        title_label.grid(row=0, column=0, columnspan=3, pady=(0, 20))
+        
+        # File selection
+        ttk.Label(main_frame, text="Select Excel File:").grid(row=1, column=0, sticky=tk.W, pady=5)
+        
+        file_frame = ttk.Frame(main_frame)
+        file_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=5)
+        
+        self.file_entry = ttk.Entry(file_frame, textvariable=self.file_path, width=60)
+        self.file_entry.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=(0, 10))
+        
+        browse_btn = ttk.Button(file_frame, text="Browse", command=self.browse_file)
+        browse_btn.grid(row=0, column=1)
+        
+        file_frame.columnconfigure(0, weight=1)
+        
+        # Instructions
+        instructions = """
+Instructions:
+1. Select your Excel file (.xlsx format)
+2. The program will analyze Column A ("On Map"), Column D ("Activity Name"), and Column F ("Line Name")
+3. It will find the best fuzzy match between lines with blank Column A and lines with "Y" in Column A
+4. Results will be saved to a new Excel file with match scores and activity names (0-100 points)
+5. Match quality: 100 (Exact), 90-99 (Good), 70-89 (Fair), <70 (Not saved)
+6. Only the highest scoring match per row is saved
+        """
+        
+        instructions_label = ttk.Label(main_frame, text=instructions, justify=tk.LEFT, 
+                                     background="lightgray", relief="sunken", padding=10)
+        instructions_label.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=20)
+        
+        # Process button
+        self.process_btn = ttk.Button(main_frame, text="Process File", 
+                                    command=self.start_processing, style="Accent.TButton")
+        self.process_btn.grid(row=4, column=0, columnspan=3, pady=10)
+        
+        # Progress bar
+        self.progress_bar = ttk.Progressbar(main_frame, variable=self.progress, 
+                                          maximum=100, length=400)
+        self.progress_bar.grid(row=5, column=0, columnspan=3, pady=10, sticky=(tk.W, tk.E))
+        
+        # Status label
+        self.status_label = ttk.Label(main_frame, textvariable=self.status_text)
+        self.status_label.grid(row=6, column=0, columnspan=3, pady=5)
+        
+        # Configure grid weights
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+        main_frame.columnconfigure(0, weight=1)
+        
+    def browse_file(self):
+        filename = filedialog.askopenfilename(
+            title="Select Excel File",
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")]
+        )
+        if filename:
+            self.file_path.set(filename)
+    
+    def start_processing(self):
+        if not self.file_path.get():
+            messagebox.showerror("Error", "Please select an Excel file first!")
+            return
+            
+        # Disable button during processing
+        self.process_btn.config(state='disabled')
+        
+        # Start processing in a separate thread to keep GUI responsive
+        thread = threading.Thread(target=self.process_file)
+        thread.daemon = True
+        thread.start()
+    
+    def update_progress(self, value, message):
+        self.progress.set(value)
+        self.status_text.set(message)
+        self.root.update_idletasks()
+    
+    def process_file(self):
+        try:
+            file_path = self.file_path.get()
+            
+            # Step 1: Read Excel file
+            self.update_progress(10, "Reading Excel file...")
+            df = pd.read_excel(file_path)
+            
+            # Check if required columns exist
+            if len(df.columns) < 6:
+                raise ValueError("Excel file must have at least 6 columns (A, B, C, D, E, F)")
+            
+            # Use column indices for A, D, and F
+            col_a = df.iloc[:, 0]  # Column A (index 0) - On Map
+            col_d = df.iloc[:, 3]  # Column D (index 3) - Activity Name  
+            col_f = df.iloc[:, 5]  # Column F (index 5) - Line Name
+            
+            self.update_progress(20, "Processing data...")
+            
+            # Step 2: Filter data
+            # Create a copy of the dataframe for our analysis
+            analysis_df = df.copy()
+            analysis_df['On_Map'] = col_a
+            analysis_df['Activity_Name'] = col_d
+            analysis_df['Line_Name'] = col_f
+            
+            # Filter out rows where Line_Name is empty/NaN
+            analysis_df = analysis_df.dropna(subset=['Line_Name'])
+            analysis_df = analysis_df[analysis_df['Line_Name'].astype(str).str.strip() != '']
+            
+            # Separate data based on Column A
+            blank_rows = analysis_df[analysis_df['On_Map'].isna() | (analysis_df['On_Map'].astype(str).str.strip() == '')]
+            y_rows = analysis_df[analysis_df['On_Map'].astype(str).str.upper().str.strip() == 'Y']
+            
+            self.update_progress(30, f"Found {len(blank_rows)} blank rows and {len(y_rows)} 'Y' rows...")
+            
+            if len(blank_rows) == 0 or len(y_rows) == 0:
+                raise ValueError("No data to compare. Check if you have both blank and 'Y' values in Column A with corresponding Line Names.")
+            
+            # Step 3: Perform fuzzy matching - find best match for each blank row
+            self.update_progress(40, "Performing fuzzy matching...")
+            
+            best_matches = []
+            total_blank_rows = len(blank_rows)
+            current_row = 0
+            
+            for blank_idx, blank_row in blank_rows.iterrows():
+                blank_line = str(blank_row['Line_Name']).strip()
+                blank_activity = str(blank_row['Activity_Name']).strip() if pd.notna(blank_row['Activity_Name']) else ''
+                
+                best_match = None
+                best_score = 0
+                
+                # Find the best match for this blank row
+                for y_idx, y_row in y_rows.iterrows():
+                    y_line = str(y_row['Line_Name']).strip()
+                    
+                    # Calculate similarity score
+                    similarity = fuzz.ratio(blank_line.lower(), y_line.lower())
+                    
+                    if similarity >= 70 and similarity > best_score:  # Only consider matches with 70+ points
+                        y_activity = str(y_row['Activity_Name']).strip() if pd.notna(y_row['Activity_Name']) else ''
+                        
+                        best_match = {
+                            'Blank_Row_Index': blank_idx,
+                            'Blank_Line_Name': blank_line,
+                            'Blank_Activity_Name': blank_activity,
+                            'Y_Row_Index': y_idx,
+                            'Y_Line_Name': y_line,
+                            'Y_Activity_Name': y_activity,
+                            'Similarity_Score': similarity,
+                            'Match_Quality': self.get_match_quality(similarity)
+                        }
+                        best_score = similarity
+                
+                # Add the best match if one was found
+                if best_match:
+                    best_matches.append(best_match)
+                
+                current_row += 1
+                if current_row % 10 == 0:
+                    progress = 40 + (current_row / total_blank_rows) * 30
+                    self.update_progress(progress, f"Processing... {current_row}/{total_blank_rows}")
+            
+            self.update_progress(70, "Creating results...")
+            
+            # Step 4: Create results dataframe
+            matches_df = pd.DataFrame(best_matches)
+            
+            # Sort by similarity score (highest first)
+            matches_df = matches_df.sort_values('Similarity_Score', ascending=False)
+            
+            # Step 5: Save results to new Excel file
+            self.update_progress(80, "Saving results...")
+            
+            # Create output filename
+            base_name = os.path.splitext(os.path.basename(file_path))[0]
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            output_path = os.path.join(os.path.dirname(file_path), 
+                                     f"{base_name}_fuzzy_matches_{timestamp}.xlsx")
+            
+            with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+                # Original data sheet
+                df.to_excel(writer, sheet_name='Original_Data', index=False)
+                
+                # Matches sheet
+                matches_df.to_excel(writer, sheet_name='Fuzzy_Matches', index=False)
+                
+                # Summary sheet
+                total_blank_with_matches = len(matches_df)
+                total_blank_without_matches = len(blank_rows) - total_blank_with_matches
+                
+                summary_data = {
+                    'Metric': [
+                        'Total Blank Rows (Column A)',
+                        'Total Y Rows (Column A)', 
+                        'Blank Rows with Matches Found (70%+)',
+                        'Blank Rows without Matches',
+                        'Exact Matches (100%)',
+                        'Good Matches (90-99%)',
+                        'Fair Matches (70-89%)'
+                    ],
+                    'Count': [
+                        len(blank_rows),
+                        len(y_rows),
+                        total_blank_with_matches,
+                        total_blank_without_matches,
+                        len(matches_df[matches_df['Similarity_Score'] == 100]),
+                        len(matches_df[(matches_df['Similarity_Score'] >= 90) & (matches_df['Similarity_Score'] < 100)]),
+                        len(matches_df[(matches_df['Similarity_Score'] >= 70) & (matches_df['Similarity_Score'] < 90)])
+                    ]
+                }
+                
+                summary_df = pd.DataFrame(summary_data)
+                summary_df.to_excel(writer, sheet_name='Summary', index=False)
+            
+            self.update_progress(100, f"Complete! Results saved to: {output_path}")
+            
+            # Show completion message
+            message = f"""Processing completed successfully!
+
+Results saved to: {output_path}
+
+Summary:
+- {len(blank_rows)} lines with blank Column A
+- {len(y_rows)} lines with 'Y' in Column A  
+- {total_blank_with_matches} blank rows matched (70%+ similarity)
+- {total_blank_without_matches} blank rows without matches
+- {len(matches_df[matches_df['Similarity_Score'] >= 90])} good+ matches (90%+ similarity)
+
+The Excel file contains 3 sheets:
+1. Original_Data - Your original data
+2. Fuzzy_Matches - Best matches only with activity names
+3. Summary - Statistical summary
+
+Note: Only the highest scoring match per blank row is saved."""
+            
+            messagebox.showinfo("Success", message)
+            
+        except Exception as e:
+            error_msg = f"Error processing file: {str(e)}"
+            self.update_progress(0, error_msg)
+            messagebox.showerror("Error", error_msg)
+        
+        finally:
+            # Re-enable the button
+            self.process_btn.config(state='normal')
+    
+    def get_match_quality(self, score):
+        if score == 100:
+            return "Exact"
+        elif score >= 90:
+            return "Good"
+        elif score >= 80:
+            return "Fair"
+        elif score >= 70:
+            return "Fair"
+        else:
+            return "Poor"
+    
+    def run(self):
+        self.root.mainloop()
+
+if __name__ == "__main__":
+    # Check if required libraries are installed
+    try:
+        import pandas as pd
+        import tkinter as tk
+        from tkinter import filedialog, messagebox, ttk
+        from fuzzywuzzy import fuzz
+        import openpyxl  # Required for Excel writing
+    except ImportError as e:
+        print(f"Missing required library: {e}")
+        print("\nPlease install required libraries:")
+        print("pip install pandas fuzzywuzzy python-levenshtein openpyxl")
+        exit(1)
+    
+    app = ExcelFuzzyMatcher()
+    app.run()
