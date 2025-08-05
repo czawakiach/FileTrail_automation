@@ -545,6 +545,9 @@ class FileTrailComparator:
                 try:
                     if use_original:
                         # Use original string matching logic
+                        # NOTE: For fallback cases (normalized < 4 chars), we SKIP substring matching
+                        # because the string was deemed too short for reliable substring operations
+                        
                         # 1. Exact match with original strings
                         if search_string in structures['original_exact_set']:
                             matches[db_name] = {
@@ -554,35 +557,11 @@ class FileTrailComparator:
                             }
                             continue
                         
-                        # 2. Substring match with original strings
-                        best_substring_match = None
-                        best_substring_score = 0
+                        # 2. SKIP substring matching for fallback cases
+                        # Reason: If normalized string was < 4 chars, the original is likely too short
+                        # for reliable substring matching, so we skip this step entirely
                         
-                        for candidate_lower, candidate_original in structures['original_dict'].items():
-                            try:
-                                # Check if either string contains the other
-                                if (search_string in candidate_lower or 
-                                    candidate_lower in search_string):
-                                    # Score based on length similarity and overlap
-                                    if len(search_string) > 0 and len(candidate_lower) > 0:
-                                        len_ratio = min(len(search_string), len(candidate_lower)) / max(len(search_string), len(candidate_lower))
-                                        score = len_ratio * 85  # Slightly lower than exact match
-                                        
-                                        if score > best_substring_score:
-                                            best_substring_score = score
-                                            best_substring_match = candidate_original
-                            except Exception:
-                                continue
-                        
-                        if best_substring_match:
-                            matches[db_name] = {
-                                'value': best_substring_match,
-                                'match_type': 'substring_original',
-                                'score': int(best_substring_score)
-                            }
-                            continue
-                        
-                        # 3. Fuzzy match with original strings
+                        # 3. Fuzzy match with original strings (only exact and fuzzy for fallback)
                         if structures['original_fuzzy_list'] and len(structures['original_fuzzy_list']) > 0:
                             try:
                                 result = process.extractOne(
@@ -898,8 +877,9 @@ class FileTrailComparator:
             self.results_text.delete(1.0, tk.END)
             self.results_text.insert(tk.END, "All data cleared. Ready for new analysis.\n\n")
             self.results_text.insert(tk.END, "Enhanced normalization with fallback logic:\n")
-            self.results_text.insert(tk.END, "• If normalized string ≥ 4 chars: use normalized matching\n")
-            self.results_text.insert(tk.END, "• If normalized string < 4 chars: fallback to original string matching\n\n")
+            self.results_text.insert(tk.END, "• If normalized string ≥ 4 chars: use normalized matching (exact, substring, fuzzy)\n")
+            self.results_text.insert(tk.END, "• If normalized string < 4 chars: fallback to original matching (exact, fuzzy only)\n")
+            self.results_text.insert(tk.END, "• Substring matching is disabled for fallback cases\n\n")
             self.results_text.insert(tk.END, "Normalization examples:\n")
             self.results_text.insert(tk.END, "• '91-0250' → '91250' (6 chars, use normalized)\n")
             self.results_text.insert(tk.END, "• 'BA-0119-86V' → 'ba11986v' (8 chars, use normalized)\n")
@@ -1088,14 +1068,14 @@ class FileTrailComparator:
             for col, default_val in match_columns.items():
                 filtered_filetrail[col] = default_val
             
-            # Track statistics and accuracy metrics with new match types
+            # Track statistics and accuracy metrics with updated match types (no substring_original)
             stats = {
-                'exploration_archives': {'exact': 0, 'substring': 0, 'fuzzy': 0, 'exact_original': 0, 'substring_original': 0, 'fuzzy_original': 0, 'total': 0},
-                'open_works_1': {'exact': 0, 'substring': 0, 'fuzzy': 0, 'exact_original': 0, 'substring_original': 0, 'fuzzy_original': 0, 'total': 0},
-                'open_works_2': {'exact': 0, 'substring': 0, 'fuzzy': 0, 'exact_original': 0, 'substring_original': 0, 'fuzzy_original': 0, 'total': 0},
-                'open_works_3': {'exact': 0, 'substring': 0, 'fuzzy': 0, 'exact_original': 0, 'substring_original': 0, 'fuzzy_original': 0, 'total': 0},
-                'lines_3d_ow': {'exact': 0, 'substring': 0, 'fuzzy': 0, 'exact_original': 0, 'substring_original': 0, 'fuzzy_original': 0, 'total': 0},
-                'lines_3d_ea': {'exact': 0, 'substring': 0, 'fuzzy': 0, 'exact_original': 0, 'substring_original': 0, 'fuzzy_original': 0, 'total': 0}
+                'exploration_archives': {'exact': 0, 'substring': 0, 'fuzzy': 0, 'exact_original': 0, 'fuzzy_original': 0, 'total': 0},
+                'open_works_1': {'exact': 0, 'substring': 0, 'fuzzy': 0, 'exact_original': 0, 'fuzzy_original': 0, 'total': 0},
+                'open_works_2': {'exact': 0, 'substring': 0, 'fuzzy': 0, 'exact_original': 0, 'fuzzy_original': 0, 'total': 0},
+                'open_works_3': {'exact': 0, 'substring': 0, 'fuzzy': 0, 'exact_original': 0, 'fuzzy_original': 0, 'total': 0},
+                'lines_3d_ow': {'exact': 0, 'substring': 0, 'fuzzy': 0, 'exact_original': 0, 'fuzzy_original': 0, 'total': 0},
+                'lines_3d_ea': {'exact': 0, 'substring': 0, 'fuzzy': 0, 'exact_original': 0, 'fuzzy_original': 0, 'total': 0}
             }
             
             match_details = []
@@ -1222,12 +1202,11 @@ class FileTrailComparator:
                         stats_text += f"    - Substring: {stat.get('substring', 0)}\n"
                         stats_text += f"    - Fuzzy: {stat.get('fuzzy', 0)}\n"
                     
-                    # Original/fallback matches
-                    original_total = stat.get('exact_original', 0) + stat.get('substring_original', 0) + stat.get('fuzzy_original', 0)
+                    # Original/fallback matches (only exact and fuzzy, no substring)
+                    original_total = stat.get('exact_original', 0) + stat.get('fuzzy_original', 0)
                     if original_total > 0:
-                        stats_text += f"  Fallback (original) matches: {original_total}\n"
+                        stats_text += f"  Fallback (original) matches: {original_total} (no substring matching)\n"
                         stats_text += f"    - Exact: {stat.get('exact_original', 0)}\n"
-                        stats_text += f"    - Substring: {stat.get('substring_original', 0)}\n"
                         stats_text += f"    - Fuzzy: {stat.get('fuzzy_original', 0)}\n"
             
             unique_count = len(self.results['unique_records'])
@@ -1346,8 +1325,8 @@ class FileTrailComparator:
                         ['substring', 'Substring match using normalized strings'],
                         ['fuzzy', 'Fuzzy match using normalized strings'],
                         ['exact_original', 'Exact match using original strings (fallback)'],
-                        ['substring_original', 'Substring match using original strings (fallback)'],
-                        ['fuzzy_original', 'Fuzzy match using original strings (fallback)']
+                        ['fuzzy_original', 'Fuzzy match using original strings (fallback)'],
+                        ['', 'NOTE: Substring matching is disabled for fallback cases']
                     ]
                 
                 if summary_data:
