@@ -1,0 +1,655 @@
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+import pandas as pd
+import os
+from datetime import datetime
+import threading
+
+class SimpleFileTrailComparator:
+    """
+    Simple exact string matching comparator for FileTrail data.
+    No normalization, no fuzzy matching, no substring matching - just pure exact matches.
+    """
+    
+    def __init__(self, root):
+        self.root = root
+        self.root.title("Simple FileTrail Exact Match Comparator")
+        
+        # Window setup
+        self.root.geometry("800x700")
+        self.root.minsize(600, 500)
+        
+        # File paths
+        self.file_paths = {
+            'filetrail': None,
+            'exploration_archives': None,
+            'open_works_1': None,
+            'open_works_2': None,
+            'open_works_3': None,
+            'lines_3d_ow': None,
+            'lines_3d_ea': None
+        }
+        
+        # Column mappings for comparison files
+        self.comparison_columns = {
+            'exploration_archives': 'EA Line Name',
+            'open_works_1': 'LINE',
+            'open_works_2': 'LINE', 
+            'open_works_3': 'LINE',
+            'lines_3d_ow': 'SURVEY',
+            'lines_3d_ea': 'LINE_ID'
+        }
+        
+        # Display names for output
+        self.display_names = {
+            'exploration_archives': 'Exploration Archives',
+            'open_works_1': 'Open Works 1',
+            'open_works_2': 'Open Works 2',
+            'open_works_3': 'Open Works 3', 
+            'lines_3d_ow': '3D Lines OW (OpenWorks)',
+            'lines_3d_ea': '3D Lines EA (Exploration Archives)'
+        }
+        
+        # Data storage
+        self.results = {}
+        self.processing_cancelled = False
+        
+        self.create_widgets()
+        
+    def create_widgets(self):
+        # Main frame
+        main_frame = ttk.Frame(self.root, padding="10")
+        main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        
+        # Title
+        title_label = ttk.Label(main_frame, text="Simple FileTrail Exact Match Comparator", 
+                               font=("Arial", 16, "bold"))
+        title_label.grid(row=0, column=0, columnspan=3, pady=(0, 20))
+        
+        # Info label
+        info_label = ttk.Label(main_frame, text="Pure exact string matching - Case sensitive, no normalization", 
+                              font=("Arial", 10), foreground="blue")
+        info_label.grid(row=1, column=0, columnspan=3, pady=(0, 20))
+        
+        # File selection section
+        file_frame = ttk.LabelFrame(main_frame, text="File Selection", padding="10")
+        file_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        
+        # FileTrail (required)
+        ttk.Label(file_frame, text="FileTrail Search Result (Required):").grid(row=0, column=0, sticky=tk.W, pady=2)
+        self.filetrail_var = tk.StringVar()
+        ttk.Entry(file_frame, textvariable=self.filetrail_var, width=50).grid(row=0, column=1, padx=5)
+        ttk.Button(file_frame, text="Browse", 
+                  command=lambda: self.browse_file('filetrail')).grid(row=0, column=2)
+        
+        # Exploration Archives (optional)
+        ttk.Label(file_frame, text="Exploration Archives (Optional):").grid(row=1, column=0, sticky=tk.W, pady=2)
+        self.exploration_var = tk.StringVar()
+        ttk.Entry(file_frame, textvariable=self.exploration_var, width=50).grid(row=1, column=1, padx=5)
+        ttk.Button(file_frame, text="Browse", 
+                  command=lambda: self.browse_file('exploration_archives')).grid(row=1, column=2)
+        
+        # Open Works files (up to 3)
+        ttk.Label(file_frame, text="Open Works 1 (Optional):").grid(row=2, column=0, sticky=tk.W, pady=2)
+        self.open_works_1_var = tk.StringVar()
+        ttk.Entry(file_frame, textvariable=self.open_works_1_var, width=50).grid(row=2, column=1, padx=5)
+        ttk.Button(file_frame, text="Browse", 
+                  command=lambda: self.browse_file('open_works_1')).grid(row=2, column=2)
+        
+        ttk.Label(file_frame, text="Open Works 2 (Optional):").grid(row=3, column=0, sticky=tk.W, pady=2)
+        self.open_works_2_var = tk.StringVar()
+        ttk.Entry(file_frame, textvariable=self.open_works_2_var, width=50).grid(row=3, column=1, padx=5)
+        ttk.Button(file_frame, text="Browse", 
+                  command=lambda: self.browse_file('open_works_2')).grid(row=3, column=2)
+        
+        ttk.Label(file_frame, text="Open Works 3 (Optional):").grid(row=4, column=0, sticky=tk.W, pady=2)
+        self.open_works_3_var = tk.StringVar()
+        ttk.Entry(file_frame, textvariable=self.open_works_3_var, width=50).grid(row=4, column=1, padx=5)
+        ttk.Button(file_frame, text="Browse", 
+                  command=lambda: self.browse_file('open_works_3')).grid(row=4, column=2)
+        
+        # 3D Lines files
+        ttk.Label(file_frame, text="3D Lines OW (OpenWorks) (Optional):").grid(row=5, column=0, sticky=tk.W, pady=2)
+        self.lines_3d_ow_var = tk.StringVar()
+        ttk.Entry(file_frame, textvariable=self.lines_3d_ow_var, width=50).grid(row=5, column=1, padx=5)
+        ttk.Button(file_frame, text="Browse", 
+                  command=lambda: self.browse_file('lines_3d_ow')).grid(row=5, column=2)
+        
+        ttk.Label(file_frame, text="3D Lines EA (Exploration Archives) (Optional):").grid(row=6, column=0, sticky=tk.W, pady=2)
+        self.lines_3d_ea_var = tk.StringVar()
+        ttk.Entry(file_frame, textvariable=self.lines_3d_ea_var, width=50).grid(row=6, column=1, padx=5)
+        ttk.Button(file_frame, text="Browse", 
+                  command=lambda: self.browse_file('lines_3d_ea')).grid(row=6, column=2)
+        
+        # Processing section
+        process_frame = ttk.LabelFrame(main_frame, text="Processing", padding="10")
+        process_frame.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        
+        # Buttons
+        button_frame = ttk.Frame(process_frame)
+        button_frame.grid(row=0, column=0, pady=5)
+        
+        self.process_button = ttk.Button(button_frame, text="Process Data", 
+                                        command=self.process_data_threaded)
+        self.process_button.grid(row=0, column=0, padx=5)
+        
+        self.cancel_button = ttk.Button(button_frame, text="Cancel", 
+                                       command=self.cancel_processing, state=tk.DISABLED)
+        self.cancel_button.grid(row=0, column=1, padx=5)
+        
+        self.clear_button = ttk.Button(button_frame, text="Clear All", 
+                                      command=self.clear_all_data)
+        self.clear_button.grid(row=0, column=2, padx=5)
+        
+        self.export_button = ttk.Button(button_frame, text="Export to Excel", 
+                                       command=self.export_to_excel, state=tk.DISABLED)
+        self.export_button.grid(row=0, column=3, padx=15)
+        
+        # Progress bar
+        self.progress_var = tk.DoubleVar()
+        self.progress_bar = ttk.Progressbar(process_frame, variable=self.progress_var, 
+                                           maximum=100, length=300)
+        self.progress_bar.grid(row=0, column=1, padx=10, pady=5)
+        
+        # Status label
+        self.status_var = tk.StringVar(value="Ready")
+        self.status_label = ttk.Label(process_frame, textvariable=self.status_var)
+        self.status_label.grid(row=0, column=2, padx=10)
+        
+        # Results section
+        results_frame = ttk.LabelFrame(main_frame, text="Results", padding="10")
+        results_frame.grid(row=4, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
+        
+        # Results text area
+        self.results_text = tk.Text(results_frame, height=15, width=80)
+        scrollbar = ttk.Scrollbar(results_frame, orient=tk.VERTICAL, command=self.results_text.yview)
+        self.results_text.configure(yscrollcommand=scrollbar.set)
+        self.results_text.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        
+        # Configure grid weights for responsive layout
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+        main_frame.columnconfigure(1, weight=1)
+        main_frame.rowconfigure(4, weight=1)
+        results_frame.columnconfigure(0, weight=1)
+        results_frame.rowconfigure(0, weight=1)
+        process_frame.columnconfigure(1, weight=1)
+        
+        # Initial message
+        self.results_text.insert(tk.END, "Simple Exact Match Comparator\n\n")
+        self.results_text.insert(tk.END, "Features:\n")
+        self.results_text.insert(tk.END, "• Case-sensitive exact matching only\n")
+        self.results_text.insert(tk.END, "• No string normalization\n")
+        self.results_text.insert(tk.END, "• No fuzzy matching\n")
+        self.results_text.insert(tk.END, "• No substring matching\n\n")
+        self.results_text.insert(tk.END, "Select files and click 'Process Data' to start.\n")
+        
+    def browse_file(self, file_type):
+        """Browse for file selection"""
+        file_path = filedialog.askopenfilename(
+            title=f"Select {file_type.replace('_', ' ').title()} File",
+            filetypes=[("Excel files", "*.xlsx *.xls"), ("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+        
+        if file_path:
+            if not os.path.exists(file_path):
+                messagebox.showerror("Error", f"File does not exist: {file_path}")
+                return
+            
+            self.file_paths[file_type] = file_path
+            
+            # Update the corresponding StringVar
+            if file_type == 'filetrail':
+                self.filetrail_var.set(file_path)
+            elif file_type == 'exploration_archives':
+                self.exploration_var.set(file_path)
+            elif file_type == 'open_works_1':
+                self.open_works_1_var.set(file_path)
+            elif file_type == 'open_works_2':
+                self.open_works_2_var.set(file_path)
+            elif file_type == 'open_works_3':
+                self.open_works_3_var.set(file_path)
+            elif file_type == 'lines_3d_ow':
+                self.lines_3d_ow_var.set(file_path)
+            elif file_type == 'lines_3d_ea':
+                self.lines_3d_ea_var.set(file_path)
+    
+    def load_file(self, file_path, column_name=None, max_rows=None):
+        """Load data from CSV or Excel file"""
+        if not file_path or not os.path.exists(file_path):
+            return None
+        
+        try:
+            if file_path.endswith('.csv'):
+                if column_name:
+                    df = pd.read_csv(file_path, usecols=[column_name], nrows=max_rows)
+                else:
+                    df = pd.read_csv(file_path, nrows=max_rows)
+            else:
+                if column_name:
+                    df = pd.read_excel(file_path, usecols=[column_name], nrows=max_rows)
+                else:
+                    df = pd.read_excel(file_path, nrows=max_rows)
+            
+            return df
+            
+        except Exception as e:
+            self.update_ui_safe(lambda: messagebox.showerror("Error", f"Failed to load file {file_path}: {str(e)}"))
+            return None
+    
+    def update_ui_safe(self, callback):
+        """Thread-safe UI updates"""
+        if self.root.winfo_exists():
+            self.root.after(0, callback)
+    
+    def validate_files(self):
+        """Validate that required files exist and have correct columns"""
+        # Check FileTrail file
+        if not self.file_paths.get('filetrail'):
+            raise ValueError("FileTrail file is required!")
+        
+        # Validate FileTrail columns
+        df_sample = self.load_file(self.file_paths['filetrail'], max_rows=0)
+        if df_sample is None:
+            raise ValueError("Cannot read FileTrail file")
+        
+        required_columns = ['HOME_LOCATION', 'LINE_ID']
+        missing_columns = [col for col in required_columns if col not in df_sample.columns]
+        
+        if missing_columns:
+            raise ValueError(f"Required columns missing from FileTrail file: {missing_columns}")
+        
+        return True
+    
+    def clear_all_data(self):
+        """Clear all data and reset interface"""
+        result = messagebox.askyesno("Clear All Data", "This will clear all loaded files and results. Continue?")
+        
+        if not result:
+            return
+        
+        # Clear file paths
+        self.file_paths = {key: None for key in self.file_paths.keys()}
+        
+        # Clear StringVar variables
+        self.filetrail_var.set("")
+        self.exploration_var.set("")
+        self.open_works_1_var.set("")
+        self.open_works_2_var.set("")
+        self.open_works_3_var.set("")
+        self.lines_3d_ow_var.set("")
+        self.lines_3d_ea_var.set("")
+        
+        # Clear results
+        self.results.clear()
+        
+        # Reset UI
+        self.progress_var.set(0)
+        self.status_var.set("Ready")
+        self.results_text.delete(1.0, tk.END)
+        self.results_text.insert(tk.END, "All data cleared. Ready for new analysis.\n")
+        
+        # Reset buttons
+        self.process_button.config(state=tk.NORMAL)
+        self.cancel_button.config(state=tk.DISABLED)
+        self.export_button.config(state=tk.DISABLED)
+    
+    def cancel_processing(self):
+        """Cancel processing"""
+        self.processing_cancelled = True
+        self.update_ui_safe(lambda: self.status_var.set("Cancelling..."))
+    
+    def process_data_threaded(self):
+        """Run processing in separate thread"""
+        self.processing_cancelled = False
+        
+        def update_buttons(process_enabled, cancel_enabled, export_enabled):
+            self.process_button.config(state=tk.NORMAL if process_enabled else tk.DISABLED)
+            self.cancel_button.config(state=tk.NORMAL if cancel_enabled else tk.DISABLED)
+            self.export_button.config(state=tk.NORMAL if export_enabled else tk.DISABLED)
+        
+        self.update_ui_safe(lambda: update_buttons(False, True, False))
+        
+        thread = threading.Thread(target=self.process_data)
+        thread.daemon = True
+        thread.start()
+    
+    def find_exact_matches(self, line_id, comparison_data):
+        """Find exact matches in comparison databases"""
+        if pd.isna(line_id) or not str(line_id).strip():
+            return {}
+        
+        # Convert to string for comparison - NO MODIFICATIONS (case-sensitive exact match)
+        search_value = str(line_id)
+        matches = {}
+        
+        for file_type, data_set in comparison_data.items():
+            if search_value in data_set:
+                matches[file_type] = {
+                    'value': search_value,
+                    'match_type': 'exact',
+                    'score': 100
+                }
+        
+        return matches
+    
+    def process_data(self):
+        """Main processing function"""
+        try:
+            # Clear previous results
+            self.update_ui_safe(lambda: self.results_text.delete(1.0, tk.END))
+            self.results = {}
+            
+            # Display processing info
+            process_info = "Processing with Simple Exact Matching:\n"
+            process_info += "• Case-sensitive exact matches only\n"
+            process_info += "• No string normalization or modification\n"
+            process_info += "• 'ABC123' ≠ 'abc123' (different case)\n\n"
+            self.update_ui_safe(lambda: self.results_text.insert(tk.END, process_info))
+            
+            # Validate files
+            self.update_ui_safe(lambda: self.status_var.set("Validating files..."))
+            self.update_ui_safe(lambda: self.progress_var.set(5))
+            
+            try:
+                self.validate_files()
+            except ValueError as e:
+                self.update_ui_safe(lambda: messagebox.showerror("Validation Error", str(e)))
+                return
+            
+            if self.processing_cancelled:
+                return
+            
+            # Load FileTrail data
+            self.update_ui_safe(lambda: self.status_var.set("Loading FileTrail data..."))
+            self.update_ui_safe(lambda: self.progress_var.set(10))
+            
+            filetrail_data = self.load_file(self.file_paths['filetrail'], max_rows=100000)
+            if filetrail_data is None:
+                return
+            
+            # Filter by HOME_LOCATION
+            self.update_ui_safe(lambda: self.status_var.set("Filtering FileTrail data..."))
+            self.update_ui_safe(lambda: self.progress_var.set(20))
+            
+            filtered_filetrail = filetrail_data[
+                filetrail_data['HOME_LOCATION'].str.contains('PT-US-HOU-WCK', na=False, case=False)
+            ].copy()
+            
+            total_filetrail = len(filetrail_data)
+            filtered_count = len(filtered_filetrail)
+            
+            result_text = f"FileTrail Processing Results:\n"
+            result_text += f"Total FileTrail records: {total_filetrail}\n"
+            result_text += f"Records with PT-US-HOU-WCK: {filtered_count}\n\n"
+            
+            self.update_ui_safe(lambda: self.results_text.insert(tk.END, result_text))
+            
+            if self.processing_cancelled:
+                return
+            
+            # Load comparison files
+            self.update_ui_safe(lambda: self.status_var.set("Loading comparison files..."))
+            self.update_ui_safe(lambda: self.progress_var.set(30))
+            
+            comparison_data = {}
+            
+            for file_type, column_name in self.comparison_columns.items():
+                if self.file_paths[file_type]:
+                    data = self.load_file(self.file_paths[file_type], column_name, max_rows=50000)
+                    if data is not None and column_name in data.columns:
+                        # Remove null/empty values and create exact match set
+                        clean_values = data[column_name].dropna().astype(str).tolist()
+                        clean_values = [val for val in clean_values if val.strip()]
+                        comparison_data[file_type] = set(clean_values)
+                        
+                        result_text = f"{self.display_names[file_type]}: {len(comparison_data[file_type])} records\n"
+                    else:
+                        comparison_data[file_type] = set()
+                        result_text = f"{self.display_names[file_type]}: Column '{column_name}' not found or file error\n"
+                else:
+                    comparison_data[file_type] = set()
+                    result_text = f"{self.display_names[file_type]}: Not provided\n"
+                
+                self.update_ui_safe(lambda text=result_text: self.results_text.insert(tk.END, text))
+                
+                if self.processing_cancelled:
+                    return
+            
+            self.update_ui_safe(lambda: self.results_text.insert(tk.END, "\n"))
+            
+            # Process matches
+            self.update_ui_safe(lambda: self.status_var.set("Processing exact matches..."))
+            self.update_ui_safe(lambda: self.progress_var.set(50))
+            
+            # Initialize result columns
+            match_columns = {
+                'EA_Match': '', 'EA_Match_Type': '', 'EA_Score': 0,
+                'OW1_Match': '', 'OW1_Match_Type': '', 'OW1_Score': 0,
+                'OW2_Match': '', 'OW2_Match_Type': '', 'OW2_Score': 0,
+                'OW3_Match': '', 'OW3_Match_Type': '', 'OW3_Score': 0,
+                '3D_OW_Match': '', '3D_OW_Match_Type': '', '3D_OW_Score': 0,
+                '3D_EA_Match': '', '3D_EA_Match_Type': '', '3D_EA_Score': 0,
+                'Has_Any_Match': False
+            }
+            
+            for col, default_val in match_columns.items():
+                filtered_filetrail[col] = default_val
+            
+            # Statistics tracking
+            stats = {
+                'exploration_archives': {'exact': 0, 'total': 0},
+                'open_works_1': {'exact': 0, 'total': 0},
+                'open_works_2': {'exact': 0, 'total': 0},
+                'open_works_3': {'exact': 0, 'total': 0},
+                'lines_3d_ow': {'exact': 0, 'total': 0},
+                'lines_3d_ea': {'exact': 0, 'total': 0}
+            }
+            
+            match_details = []
+            total_processed = 0
+            total_with_matches = 0
+            
+            # Column mapping for results
+            file_type_mapping = {
+                'exploration_archives': ('EA_Match', 'EA_Match_Type', 'EA_Score'),
+                'open_works_1': ('OW1_Match', 'OW1_Match_Type', 'OW1_Score'),
+                'open_works_2': ('OW2_Match', 'OW2_Match_Type', 'OW2_Score'),
+                'open_works_3': ('OW3_Match', 'OW3_Match_Type', 'OW3_Score'),
+                'lines_3d_ow': ('3D_OW_Match', '3D_OW_Match_Type', '3D_OW_Score'),
+                'lines_3d_ea': ('3D_EA_Match', '3D_EA_Match_Type', '3D_EA_Score')
+            }
+            
+            # Process in batches
+            batch_size = 50
+            total_rows = len(filtered_filetrail)
+            
+            for batch_start in range(0, total_rows, batch_size):
+                if self.processing_cancelled:
+                    self.update_ui_safe(lambda: self.status_var.set("Processing cancelled"))
+                    return
+                
+                batch_end = min(batch_start + batch_size, total_rows)
+                batch_progress = 50 + (batch_start / total_rows) * 40
+                self.update_ui_safe(lambda prog=batch_progress: self.progress_var.set(prog))
+                
+                for idx in range(batch_start, batch_end):
+                    row_idx = filtered_filetrail.index[idx]
+                    line_id = filtered_filetrail.loc[row_idx, 'LINE_ID']
+                    
+                    if pd.isna(line_id):
+                        continue
+                    
+                    total_processed += 1
+                    
+                    # Find exact matches
+                    matches = self.find_exact_matches(line_id, comparison_data)
+                    
+                    has_match = bool(matches)
+                    if has_match:
+                        total_with_matches += 1
+                    
+                    filtered_filetrail.loc[row_idx, 'Has_Any_Match'] = has_match
+                    
+                    # Store match results
+                    for file_type, match_info in matches.items():
+                        if file_type in stats:
+                            stats[file_type]['exact'] += 1
+                            stats[file_type]['total'] += 1
+                        
+                        # Store in result columns
+                        if file_type in file_type_mapping:
+                            match_col, type_col, score_col = file_type_mapping[file_type]
+                            filtered_filetrail.loc[row_idx, match_col] = match_info['value']
+                            filtered_filetrail.loc[row_idx, type_col] = match_info['match_type']
+                            filtered_filetrail.loc[row_idx, score_col] = match_info['score']
+                        
+                        # Store detailed match info
+                        match_details.append({
+                            'FileTrail_LINE_ID': line_id,
+                            'Database': self.display_names[file_type],
+                            'Matched_Value': match_info['value'],
+                            'Match_Type': match_info['match_type'],
+                            'Score': match_info['score']
+                        })
+            
+            if self.processing_cancelled:
+                self.update_ui_safe(lambda: self.status_var.set("Processing cancelled"))
+                return
+            
+            # Store results
+            self.results['filtered_filetrail'] = filtered_filetrail
+            self.results['match_details'] = pd.DataFrame(match_details)
+            self.results['unique_records'] = filtered_filetrail[~filtered_filetrail['Has_Any_Match']].copy()
+            
+            # Display statistics
+            match_rate = (total_with_matches / total_processed * 100) if total_processed > 0 else 0
+            
+            stats_text = f"\nSimple Exact Match Statistics:\n"
+            stats_text += f"Total records processed: {total_processed}\n"
+            stats_text += f"Records with exact matches: {total_with_matches} ({match_rate:.1f}%)\n"
+            stats_text += f"Unique records (no matches): {len(self.results['unique_records'])}\n\n"
+            
+            stats_text += f"Matches by database:\n"
+            for file_type, stat in stats.items():
+                if stat['total'] > 0:
+                    display_name = self.display_names[file_type]
+                    stats_text += f"  {display_name}: {stat['exact']} exact matches\n"
+            
+            stats_text += f"\nProcessing complete!"
+            
+            self.update_ui_safe(lambda: self.results_text.insert(tk.END, stats_text))
+            
+            # Complete
+            self.update_ui_safe(lambda: self.status_var.set("Simple exact matching complete!"))
+            self.update_ui_safe(lambda: self.progress_var.set(100))
+            self.update_ui_safe(lambda: self.export_button.config(state=tk.NORMAL))
+            
+        except Exception as e:
+            import traceback
+            error_msg = f"Processing failed: {str(e)}\n\nDetails:\n{traceback.format_exc()}"
+            self.update_ui_safe(lambda: messagebox.showerror("Error", error_msg))
+            self.update_ui_safe(lambda: self.status_var.set("Error occurred"))
+        
+        finally:
+            # Reset buttons
+            self.update_ui_safe(lambda: self.process_button.config(state=tk.NORMAL))
+            self.update_ui_safe(lambda: self.cancel_button.config(state=tk.DISABLED))
+    
+    def export_to_excel(self):
+        """Export results to Excel file"""
+        if not self.results:
+            messagebox.showwarning("Warning", "No results to export!")
+            return
+        
+        # Get output file path
+        output_path = filedialog.asksaveasfilename(
+            title="Save Results",
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx")]
+        )
+        
+        if not output_path:
+            return
+        
+        try:
+            self.status_var.set("Exporting to Excel...")
+            self.progress_var.set(0)
+            
+            with pd.ExcelWriter(output_path, engine='openpyxl') as writer:
+                # Sheet 1: Unique FileTrail records
+                self.progress_var.set(20)
+                self.results['unique_records'].to_excel(
+                    writer, sheet_name='Unique_FileTrail_Records', index=False
+                )
+                
+                # Sheet 2: All FileTrail records with match info
+                self.progress_var.set(40)
+                self.results['filtered_filetrail'].to_excel(
+                    writer, sheet_name='All_FileTrail_Records', index=False
+                )
+                
+                # Sheet 3: Match details
+                self.progress_var.set(60)
+                if not self.results['match_details'].empty:
+                    self.results['match_details'].to_excel(
+                        writer, sheet_name='Match_Details', index=False
+                    )
+                
+                # Sheet 4: Summary statistics
+                self.progress_var.set(80)
+                total_records = len(self.results['filtered_filetrail'])
+                unique_records = len(self.results['unique_records'])
+                matched_records = total_records - unique_records
+                
+                summary_data = [
+                    ['Metric', 'Value'],
+                    ['Total FileTrail Records Processed', total_records],
+                    ['Records with Exact Matches', matched_records],
+                    ['Unique Records (No Matches)', unique_records],
+                    ['Match Rate (%)', f"{(matched_records/total_records*100):.1f}" if total_records > 0 else "0"],
+                    ['Processing Date', datetime.now().strftime('%Y-%m-%d %H:%M:%S')],
+                    ['Matching Method', 'Exact String Matching Only'],
+                    ['Case Sensitive', 'Yes'],
+                    ['Normalization Applied', 'None'],
+                    ['Fuzzy Matching', 'Disabled'],
+                    ['Substring Matching', 'Disabled'],
+                    ['', ''],
+                    ['Match Examples', ''],
+                    ['ABC123 = ABC123', 'MATCH'],
+                    ['ABC123 = abc123', 'NO MATCH (different case)'],
+                    ['91-0250 = 91-0250', 'MATCH'],
+                    ['91-0250 = 910250', 'NO MATCH (different format)']
+                ]
+                
+                summary_df = pd.DataFrame(summary_data[1:], columns=summary_data[0])
+                summary_df.to_excel(writer, sheet_name='Processing_Summary', index=False)
+            
+            self.progress_var.set(100)
+            self.status_var.set("Export completed!")
+            messagebox.showinfo("Success", f"Results exported to {output_path}")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Export failed: {str(e)}")
+        finally:
+            self.progress_var.set(0)
+            self.status_var.set("Ready")
+
+
+def main():
+    root = tk.Tk()
+    app = SimpleFileTrailComparator(root)
+    
+    # Handle window closing gracefully
+    def on_closing():
+        if hasattr(app, 'processing_cancelled'):
+            app.processing_cancelled = True
+        root.destroy()
+    
+    root.protocol("WM_DELETE_WINDOW", on_closing)
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()
